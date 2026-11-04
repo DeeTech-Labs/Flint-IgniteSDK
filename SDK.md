@@ -59,10 +59,25 @@ latency still require measurement on the device.
 `run` is a deterministic headless simulation with synthetic presses and a final
 PPM image; it is not an interactive game window. Flare's simulator uses the same
 Core for timed updates. Physical game input is not wired in this stage.
-Host builds enable Lua by default. `-DFLINT_ENABLE_LUA=OFF` builds the rejecting
-configuration used by current firmware. Firmware never advertises Lua until its
-component adapter is explicitly enabled and validated on Spark. The recorded unit
-has 4 MiB Flash and 2 MiB PSRAM; that does not establish free runtime headroom.
+Host builds enable Lua by default; `-DFLINT_ENABLE_LUA=OFF` tests the rejecting
+configuration. Spark firmware enables the same source/limits via
+`CONFIG_FLINT_LUA_RUNTIME`. The shared configuration limits nested C calls to 40;
+firmware reserves a 32 KiB main-task stack. C++ bridge headers include `<climits>`
+to preserve the C/C++ integer ABI on ESP-IDF's toolchain.
+
+Physical validation on the 4 MiB Flash / 2 MiB PSRAM Spark on 2026-11-04 passed
+scene animation, 30 app switches, loop/allocator/forbidden-call failures, excessive
+parser nesting and failed-initialization recovery. Game VM peak was 8091 bytes;
+minimum observed free main-task stack was 17808 bytes. See the firmware repository's
+`docs/validation/spark-lua-2026-11-04.json` for the measured build identity and raw
+results. These measurements cover one board and workload, not all applications.
+
+Authenticated Companion method 21 (`diagnostics`) returns integer-valued strings:
+VM used/peak bytes, last logic error, and device-provided memory/stack/timing fields.
+Timing maxima are cumulative since boot and include transitions/recovery; they do
+not represent steady-state FPS or pure interpreter time. `tools/companion.py` is an
+explicit USB development client (requires pyserial), not an app-accessible API.
+
 
 ## One source, pinned consumers
 
@@ -85,10 +100,10 @@ same source release through its component adapter, not a host static library.
 Board configuration, transport and display adapters remain in OS; Qt UI stays in
 Flare. Factory packages/examples currently belong to this shared contract release.
 
-## Next device gate
+## Remaining work
 
-Measure post-display/BLE internal memory, largest blocks, PSRAM, firmware size,
-load/update/teardown peaks, frame latency and GC pauses. Verify infinite-loop and
-allocation failure recovery on the actual board before enabling Lua in firmware.
-Then add permission-checked persistence/device APIs, interactive input, styles and
-Studio editing. Marketplace signatures and publication remain separate work.
+Recheck resource, latency and failure recovery measurements for other boards or
+new native bindings. Instruction quotas do not establish a wall-clock deadline for
+C code, parsing, garbage collection or filesystem recovery. Add permission-checked
+persistence/device APIs, interactive input, styles and Studio editing separately.
+Marketplace signatures and publication remain separate work.

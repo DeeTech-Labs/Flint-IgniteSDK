@@ -54,6 +54,7 @@ int main(int argc, char **argv) {
     CHECK(hello(ContractRevision) == Error::ok);
     session.authenticated = false;
     CHECK(request(Method::info) == Error::permission_denied);
+    CHECK(request(Method::diagnostics) == Error::permission_denied);
     session.authenticated = true;
     Bytes info;
     CHECK(request(Method::info, {}, &info) == Error::ok);

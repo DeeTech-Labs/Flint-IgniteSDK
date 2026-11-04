@@ -79,8 +79,7 @@ Use four spaces, no tabs, in maintained source. `.editorconfig` and `.clang-form
 ## Explicit remaining limits
 
 Lua 5.4.9 is the only application scripting engine. Its bounded prototype runs on
-host builds and the shared simulator; firmware currently disables it until board
-memory and execution measurements pass. Executable background services are not
+host builds, the shared simulator and the validated Spark firmware configuration. Executable background services are not
 supported. Registry entries for future permissions do not imply implemented APIs.
 
 The development unit was identified as 4 MiB Flash and 2 MiB PSRAM. Firmware owns the partition layout with two application slots, a factory volume and writable storage. PSRAM is optional; the renderer prefers it when available and stages DMA rows in internal memory. Real memory headroom, wiring, BLE behavior, flash/power-loss behavior and battery life still require device validation. No battery-life or on-device reliability claim follows from host tests.

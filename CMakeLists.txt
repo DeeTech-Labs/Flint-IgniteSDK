@@ -25,12 +25,10 @@ endif()
 
 option(FLINT_ENABLE_LUA "Enable bounded experimental Lua execution on host" ON)
 if(FLINT_ENABLE_LUA)
-    file(GLOB FLINT_LUA_CORE CONFIGURE_DEPENDS third_party/lua/*.c)
-    list(FILTER FLINT_LUA_CORE EXCLUDE REGEX
-        "/(lua|luac|linit|lcorolib|lbaselib|ldblib|liolib|loslib|loadlib|lmathlib|lstrlib|ltablib|lutf8lib)\\.c$")
+    include(cmake/LuaSources.cmake)
     target_sources(flint_platform PRIVATE ${FLINT_LUA_CORE})
     target_include_directories(flint_platform PRIVATE third_party/lua)
-    target_compile_definitions(flint_platform PUBLIC FLINT_ENABLE_LUA)
+    target_compile_definitions(flint_platform PUBLIC ${FLINT_LUA_DEFINITIONS})
 endif()
 
 option(FLINT_SDK_TOOLS "Build host-side Ignite SDK validator" ON)
