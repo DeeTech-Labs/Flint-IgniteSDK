@@ -15,7 +15,7 @@ from compile_ignite import compile_project, identifier
 
 def validate(path, executable):
     result = subprocess.run(
-        [str(executable), str(path.resolve())], capture_output=True, text=True
+        [str(executable), str(path.resolve())], capture_output=True, text=True, encoding="utf-8"
     )
     if result.returncode:
         raise ValueError(result.stderr.strip() or "native validator failed")
@@ -88,7 +88,7 @@ def main(argv=None):
                 raise ValueError("image must not overwrite package")
             result = subprocess.run([str(args.runner.resolve()), str(args.package.resolve()),
                 str(args.frames), str(args.press_every), str(args.image.resolve())],
-                capture_output=True, text=True)
+                capture_output=True, text=True, encoding="utf-8")
             if result.returncode:
                 raise ValueError(result.stderr.strip() or "simulation failed")
             print(result.stdout, end="")
@@ -114,4 +114,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Reports and diagnostics have the same UTF-8 contract as the native validator.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     sys.exit(main())

@@ -250,7 +250,7 @@ def compile_project(project, root):
         path = (root / logic["path"]).resolve()
         if not path.is_relative_to(root.resolve()):
             raise ValueError("logic escapes project")
-        data = path.read_bytes()
+        data = path.read_text(encoding="utf-8").encode("utf-8")
         if not data or len(data) > 16384 or data.startswith(b"\x1b") or b"\0" in data:
             raise ValueError("Lua requires text source of 1..16384 bytes")
         data.decode("utf-8")
