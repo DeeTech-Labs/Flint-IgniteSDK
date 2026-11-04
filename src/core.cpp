@@ -201,8 +201,18 @@ Error Core::launch(std::string_view id, std::string_view component) {
     return error;
   auto result =
       runtime_.launch(p, component, platform_.memory, platform_.capabilities);
-  if (result != Error::ok)
+  if (result != Error::ok) {
     lastLogicError_ = result;
+    if (runtime_.state() == State::empty) {
+      const auto failed = std::string(id) + "/" + std::string(component);
+      const auto selected = settings_.find("role1");
+      if (selected != settings_.end() && selected->second == failed) {
+        settings_.erase(selected);
+        persistSettings();
+      }
+      activateRole(Role::clock);
+    }
+  }
   if (result == Error::ok) {
     haveMetrics_ = false;
     events_.post({3, 0, runtime_.generation()});
