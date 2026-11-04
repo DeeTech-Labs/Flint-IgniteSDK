@@ -65,12 +65,10 @@ configuration. Spark firmware enables the same source/limits via
 firmware reserves a 32 KiB main-task stack. C++ bridge headers include `<climits>`
 to preserve the C/C++ integer ABI on ESP-IDF's toolchain.
 
-Physical validation on the 4 MiB Flash / 2 MiB PSRAM Spark on 2026-11-04 passed
-scene animation, 30 app switches, loop/allocator/forbidden-call failures, excessive
-parser nesting and failed-initialization recovery. Game VM peak was 8091 bytes;
-minimum observed free main-task stack was 17808 bytes. See the firmware repository's
-`docs/validation/spark-lua-2026-11-04.json` for the measured build identity and raw
-results. These measurements cover one board and workload, not all applications.
+The Spark profile has physical validation for scene animation, repeated app
+switches, execution/allocation limits and factory recovery. Keep raw device
+reports outside the repository; record concise validation results in pull requests.
+Revalidate on-device when changing the engine, limits or native bindings.
 
 Authenticated Companion method 21 (`diagnostics`) returns integer-valued strings:
 VM used/peak bytes, last logic error, and device-provided memory/stack/timing fields.
