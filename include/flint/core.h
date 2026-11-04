@@ -40,6 +40,7 @@ class Core {
   uint64_t metricAt_{};
   bool haveMetrics_{};
   uint64_t logicAt_{};
+  Error lastLogicError_{Error::ok};
   uint64_t renderedMinute_{~uint64_t(0)};
   Error activateRole(Role role, std::string_view selection = {});
   Error persistSettings();

@@ -28,7 +28,7 @@ if(FLINT_ENABLE_LUA)
     include(cmake/LuaSources.cmake)
     target_sources(flint_platform PRIVATE ${FLINT_LUA_CORE})
     target_include_directories(flint_platform PRIVATE third_party/lua)
-    target_compile_definitions(flint_platform PUBLIC FLINT_ENABLE_LUA PRIVATE LUAI_MAXCCALLS=40)
+    target_compile_definitions(flint_platform PUBLIC ${FLINT_LUA_DEFINITIONS})
 endif()
 
 option(FLINT_SDK_TOOLS "Build host-side Ignite SDK validator" ON)

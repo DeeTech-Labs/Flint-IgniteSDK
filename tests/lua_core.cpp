@@ -17,6 +17,11 @@ int main(int argc, char **argv) {
   platform.monotonic = [&] { return now; };
   Core core(argv[1], argv[2], platform);
   CHECK(core.begin() == Error::ok);
+  Session session{true, true, 1};
+  auto diagnostics = core.handle({Method::diagnostics, 1, false, {}}, session);
+  Reader response{diagnostics.payload};
+  CHECK(response.n(2) == uint16_t(Error::ok));
+  CHECK(response.n(2) == 3);
   CHECK(core.runtime().launch({{}, argv[3], false}, "main", platform.memory,
                               platform.capabilities) == Error::ok);
   FlintRender::Scene before, after;

@@ -201,6 +201,8 @@ Error Core::launch(std::string_view id, std::string_view component) {
     return error;
   auto result =
       runtime_.launch(p, component, platform_.memory, platform_.capabilities);
+  if (result != Error::ok)
+    lastLogicError_ = result;
   if (result == Error::ok) {
     haveMetrics_ = false;
     events_.post({3, 0, runtime_.generation()});
@@ -249,7 +251,9 @@ bool Core::tick() {
     logicAt_ = at;
     // Failure is handled by the same factory recovery path as render errors.
     const auto failed = runtime_.manifest().id + "/" + runtime_.component().id;
-    if (runtime_.update(elapsed) != Error::ok) {
+    const auto logicError = runtime_.update(elapsed);
+    if (logicError != Error::ok) {
+      lastLogicError_ = logicError;
       runtime_.stop();
       const auto selected = settings_.find("role1");
       if (selected != settings_.end() && selected->second == failed) {
@@ -442,6 +446,7 @@ Frame Core::handle(const Frame &request, Session &session) {
         break;
       }
       auto values = platform_.diagnostics ? platform_.diagnostics() : Values{};
+      values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
       values["lua_used_bytes"] = std::to_string(runtime_.logicUsed());
       values["lua_peak_bytes"] = std::to_string(runtime_.logicPeak());
       out.n(values.size(), 2);

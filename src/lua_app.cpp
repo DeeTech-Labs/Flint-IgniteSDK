@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <flint/lua_app.h>
