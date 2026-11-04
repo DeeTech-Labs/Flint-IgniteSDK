@@ -1,3 +1,5 @@
+[Русский оригинал](../ru/PC-MONITOR.md)
+
 # PC Monitor example
 
 Compile `project.json` with `platform/tools/compile_ignite.py`, then install the resulting binary in Ignite Hub. No firmware source changes or flashing are needed.

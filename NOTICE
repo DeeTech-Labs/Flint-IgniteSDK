@@ -1,12 +1,9 @@
-FlinT OS
+Flint IgniteSDK
 Copyright 2026 DeeTech Labs
+Required Notice: Copyright 2026 DeeTech Labs (https://github.com/DeeTech-Labs)
 
-This product includes software developed by DeeTech Labs.
-https://github.com/DeeTech-Labs
-
-The portable rasterizer's antialiased Lato subsets and test font derive from
-Lato by Łukasz Dziedzic, licensed under SIL Open Font License 1.1.
-See platform/include/flint/graphics/fonts/Lato-LICENSE.txt and
-platform/tests/assets/Lato-LICENSE.txt.
-
-The hardware display component uses LovyanGFX under its upstream license.
+Mixed licensing: see LICENSE and docs/ru/LICENSING.md.
+Lua 5.4.9 is distributed under its upstream MIT license; see third_party/lua/lua.h and third_party/lua/README.flint.
+Lato fonts, generated subsets and test fonts are by Łukasz Dziedzic, OFL-1.1;
+see include/flint/graphics/fonts/Lato-LICENSE.txt and tests/assets/Lato-LICENSE.txt.
+Earlier license grants and third-party notices remain applicable.

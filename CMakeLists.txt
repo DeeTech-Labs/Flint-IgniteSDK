@@ -113,3 +113,18 @@ if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lua_core.py $<TARGET_FILE:lua_core_tests>)
     set_tests_properties(lua_core PROPERTIES TIMEOUT 10)
 endif()
+
+# Keep the mixed-license scope, legal originals and operative permissions together.
+install(FILES LICENSE NOTICE README.md DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK)
+install(DIRECTORY LICENSES/ DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/LICENSES)
+install(DIRECTORY docs/ru docs/en
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/docs
+    FILES_MATCHING PATTERN "*.md")
+install(FILES third_party/lua/lua.h third_party/lua/README.flint
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/third_party/lua)
+install(FILES include/flint/graphics/fonts/Lato-LICENSE.txt
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/third_party/Lato)
+
+install(DIRECTORY .github/assets/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/.github/assets
+    FILES_MATCHING PATTERN "readme-hero*.svg")

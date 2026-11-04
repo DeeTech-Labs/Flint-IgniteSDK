@@ -1,3 +1,5 @@
+[Русский оригинал](../ru/SDK.md)
+
 # Flint IgniteSDK
 
 Standalone SDK and shared portable runtime for FlinT OS and Flint Flare.
