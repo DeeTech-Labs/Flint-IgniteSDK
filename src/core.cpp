@@ -436,6 +436,21 @@ Frame Core::handle(const Frame &request, Session &session) {
     fail(Error::incompatible_contract);
   else
     switch (request.method) {
+    case Method::diagnostics: {
+      if (!in.done()) {
+        fail(Error::invalid_argument);
+        break;
+      }
+      auto values = platform_.diagnostics ? platform_.diagnostics() : Values{};
+      values["lua_used_bytes"] = std::to_string(runtime_.logicUsed());
+      values["lua_peak_bytes"] = std::to_string(runtime_.logicPeak());
+      out.n(values.size(), 2);
+      for (const auto &[key, value] : values) {
+        out.text(key);
+        out.text(value);
+      }
+      break;
+    }
     case Method::info: {
       if (!in.done()) {
         fail(Error::invalid_argument);

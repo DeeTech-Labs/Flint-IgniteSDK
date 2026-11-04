@@ -30,6 +30,7 @@ inline constexpr ServiceDescriptor ServiceRegistry[]{
     ServiceDescriptor{Method::rollback, "rollback", true},
     ServiceDescriptor{Method::recover, "recover", true},
     ServiceDescriptor{Method::package_read, "package_read", false},
+    ServiceDescriptor{Method::diagnostics, "diagnostics", false},
 };
 
 static_assert(uint16_t(Method::hello) == 1);
@@ -52,4 +53,5 @@ static_assert(uint16_t(Method::pairing) == 17);
 static_assert(uint16_t(Method::rollback) == 18);
 static_assert(uint16_t(Method::recover) == 19);
 static_assert(uint16_t(Method::package_read) == 20);
+static_assert(uint16_t(Method::diagnostics) == 21);
 } // namespace flint

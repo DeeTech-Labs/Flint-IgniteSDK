@@ -49,6 +49,7 @@ public:
                MemoryBudget available, uint64_t caps);
   Error update(uint32_t elapsedMs, bool pressed = false);
   bool scripted() const { return lua_.active(); }
+  size_t logicUsed() const { return lua_.used(); }
   size_t logicPeak() const { return lua_.peak(); }
   Error stop();
   Error suspend();

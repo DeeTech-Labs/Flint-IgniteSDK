@@ -23,7 +23,8 @@ enum class Method : uint16_t {
     pairing,
     rollback,
     recover,
-    package_read
+    package_read,
+    diagnostics
 };
 struct Frame {
     Method method{};

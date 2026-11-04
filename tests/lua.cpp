@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <flint/lua_app.h>
 #include <iostream>
+#include <string>
 using namespace flint;
 #define CHECK(x)                                                               \
   do {                                                                         \
@@ -63,6 +64,8 @@ int main() {
   }
   CHECK(load("\x1bLua") == Error::invalid_argument);
   CHECK(load("not valid lua") != Error::ok);
+  CHECK(load(std::string("return ") + std::string(300, '(') + "1" +
+             std::string(300, ')')) != Error::ok);
   for (int i = 0; i < 100; ++i) {
     CHECK(load("return {update=function() ignite.value('ok',7) end}") ==
           Error::ok);

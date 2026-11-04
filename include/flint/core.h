@@ -16,6 +16,7 @@ struct Platform {
                         CapMetrics | HostLogicCapabilities};
   std::function<uint64_t()> monotonic;
   std::function<uint64_t()> free_storage;
+  std::function<Values()> diagnostics;
   std::function<Bytes(std::string_view)> pairing;
 };
 struct Session {

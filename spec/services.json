@@ -120,6 +120,12 @@
             "name": "package_read",
             "mutates": false,
             "trust": "authenticated_companion"
+        },
+        {
+            "id": 21,
+            "name": "diagnostics",
+            "mutates": false,
+            "trust": "authenticated_companion"
         }
     ]
 }
