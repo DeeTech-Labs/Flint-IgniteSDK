@@ -1,0 +1,2 @@
+# Preserve the verified upstream distribution byte-for-byte.
+third_party/lua/* whitespace=-blank-at-eof

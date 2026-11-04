@@ -1,0 +1,17 @@
+{
+    "id": "example.flappy-bird",
+    "name": "Flappy Bird",
+    "publisher": "deetech",
+    "version": 1,
+    "capabilities": 65,
+    "budget": {"internal": 49152, "external": 0, "instructions": 4096},
+    "permissions": ["ui.render", "input.focused"],
+    "logic": {"language": "lua", "path": "main.lua"},
+    "components": [{"id": "main", "type": "app", "ui": [
+        {"kind": "rect", "w": 280, "h": 240, "color": "#102030"},
+        {"kind": "rect", "x": 55, "y": 110, "w": 12, "h": 12, "color": "#ffd04a"},
+        {"kind": "rect", "x": 260, "y": 0, "w": 24, "h": 70, "color": "#50b070"},
+        {"kind": "rect", "x": 260, "y": 150, "w": 24, "h": 70, "color": "#50b070"},
+        {"kind": "text", "x": 10, "y": 235, "text": "Score: ${app.score}  Dead: ${app.dead}", "color": "#ffffff"}
+    ]}]
+}

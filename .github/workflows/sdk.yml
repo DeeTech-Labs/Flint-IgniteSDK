@@ -1,0 +1,20 @@
+name: Ignite SDK
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lua: ["ON", "OFF"]
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 -m pip install Pillow
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DFLINT_ENABLE_LUA=${{ matrix.lua }}
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
+      - run: |
+          python3 tools/generate_registry.py
+          python3 tools/build_system.py
+          git diff --exit-code -- include/flint/registry.h factory examples
