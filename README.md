@@ -58,19 +58,18 @@ The handshake carries protocol, development revision, build ID and required capa
 
 ```sh
 python3 -m pip install Pillow
-python3 platform/tools/generate_registry.py
-python3 platform/tools/build_system.py
-cmake -S platform -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
+python3 tools/generate_registry.py
+python3 tools/build_system.py
+cmake -S . -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
 cmake --build /tmp/flint-platform
 ctest --test-dir /tmp/flint-platform --output-on-failure
-python3 -m unittest discover -s tools/tests -v
 ```
 
 Build an application without changing or flashing OS source:
 
 ```sh
-python3 platform/tools/compile_ignite.py \
-    platform/examples/pc-monitor/project.json /tmp/pc-monitor.ignit
+python3 tools/compile_ignite.py \
+    examples/pc-monitor/project.json /tmp/pc-monitor.ignit
 ```
 
 Integration tests exercise resume, duplicate chunks, integrity failures, updates, rollback, factory protection, permission checks and revocation, custom fonts/images, stale handles, repeated switching and framing. Flare's offline smoke test loads the actual QML interface and simulator. Physical device tests are excluded.

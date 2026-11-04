@@ -107,3 +107,11 @@ if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS AND FLINT_ENABLE_LUA)
         $<TARGET_FILE:ignite-check> $<TARGET_FILE:ignite-run>)
     set_tests_properties(lua_packages PROPERTIES TIMEOUT 20)
 endif()
+
+if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(lua_core_tests tests/lua_core.cpp)
+    target_link_libraries(lua_core_tests PRIVATE flint_platform)
+    add_test(NAME lua_core COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lua_core.py $<TARGET_FILE:lua_core_tests>)
+    set_tests_properties(lua_core PROPERTIES TIMEOUT 10)
+endif()
