@@ -317,21 +317,26 @@ Values Core::bindings() {
     values["locale:" + key] = value;
   for (auto &[key, value] : settings_)
     values["settings:" + key] = value;
-  std::string launcher;
-  packages_.visit([&](const Installed &installed) {
-    for (const auto &component : installed.manifest.components) {
-      if (component.type == Component::app ||
-          component.type == Component::watchface) {
-        if (launcher.size() + installed.manifest.name.size() >= 170) {
-          return false;
-        }
-        launcher += installed.manifest.name + "  ";
-      }
-    }
-    return true;
-  });
-  values["packages.list"] = launcher;
   const auto &m = runtime_.manifest();
+  const bool needsPackages = std::any_of(
+      m.permissions.begin(), m.permissions.end(),
+      [](const Declaration &d) { return d.permission == "packages.list"; });
+  std::string launcher;
+  if (needsPackages)
+    packages_.visit([&](const Installed &installed) {
+      for (const auto &component : installed.manifest.components) {
+        if (component.type == Component::app ||
+            component.type == Component::watchface) {
+          if (launcher.size() + installed.manifest.name.size() >= 170) {
+            return false;
+          }
+          launcher += installed.manifest.name + "  ";
+        }
+      }
+      return true;
+    });
+  if (needsPackages)
+    values["packages.list"] = launcher;
   if (canReceiveMetrics() && haveMetrics_ &&
       platform_.monotonic() - metricAt_ < 10000) {
     char b[48];
