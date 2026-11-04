@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert (result.returncode == 0) == success, result.stderr
     check(True)
     canonical = package.read_bytes()
-    source = (root / "main.lua").read_bytes()
+    source = (root / "main.lua").read_text(encoding="utf-8").encode("utf-8")
     (root / "main.lua").write_bytes(source.replace(b"\n", b"\r\n"))
     assert compile_project(project, root) == canonical, "Lua package depends on host line endings"
     (root / "main.lua").write_bytes(source)
