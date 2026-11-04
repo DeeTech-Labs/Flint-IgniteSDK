@@ -4,17 +4,24 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         lua: ["ON", "OFF"]
     steps:
       - uses: actions/checkout@v5
-      - run: python3 -m pip install Pillow
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DFLINT_ENABLE_LUA=${{ matrix.lua }}
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12'
+      - run: python -m pip install Pillow
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: runner.os == 'Windows'
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFLINT_ENABLE_LUA=${{ matrix.lua }} -DPython3_EXECUTABLE="${{ steps.python.outputs.python-path }}"
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure
       - run: |
-          python3 tools/generate_registry.py
-          python3 tools/build_system.py
+          python tools/generate_registry.py
+          python tools/build_system.py
           git diff --exit-code -- include/flint/registry.h include/flint/services.h factory examples

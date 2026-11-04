@@ -21,6 +21,7 @@ cmake --install /tmp/ignite-build --prefix /tmp/ignite-sdk
 
 On Windows invoke the installed `ignite` script using Python. In a source checkout
 pass `--validator /tmp/ignite-build/ignite-check` to `tools/ignite.py build/check`.
+CLI reports and diagnostics use UTF-8 independently of the console code page.
 Failed builds preserve the last successful package. The JSON report gives declared
 budgets and runtime compatibility, not measured hardware fit, publisher authenticity,
 market admission, or battery-life guarantees.

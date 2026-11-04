@@ -1,5 +1,6 @@
 """End-to-end SDK tests against the production portable validator."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,9 +23,9 @@ class SDKTests(unittest.TestCase):
         self.output = self.root / "app.ignit"
         self.project = json.loads((ROOT / "examples/pc-monitor/project.json").read_text())
 
-    def cli(self, *args, success=True):
+    def cli(self, *args, success=True, env=None):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ignite.py"), *map(str, args)],
-                                capture_output=True, text=True, cwd=self.root)
+                                capture_output=True, text=True, encoding="utf-8", cwd=self.root, env=env)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
 
@@ -43,6 +44,15 @@ class SDKTests(unittest.TestCase):
         checked = self.cli("check", self.output, "--validator", VALIDATOR)
         self.assertEqual(report, json.loads(checked.stdout))
         self.cli("init", directory, "--id", "demo.clock", "--publisher", "demo", success=False)
+
+    def test_unicode_report_under_non_utf8_locale(self):
+        self.project["name"] = "Русский циферблат"
+        self.source.write_text(json.dumps(self.project), encoding="utf-8")
+        environment = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0",
+                           PYTHONCOERCECLOCALE="0", LC_ALL="C")
+        result = self.cli("build", self.source, self.output, "--validator", VALIDATOR,
+                          env=environment)
+        self.assertEqual(json.loads(result.stdout)["name"], self.project["name"])
 
     def test_corrupt_package(self):
         self.compile()

@@ -20,6 +20,11 @@ with tempfile.TemporaryDirectory() as directory:
         result = subprocess.run([CHECK, str(package)], capture_output=True, text=True, timeout=5)
         assert (result.returncode == 0) == success, result.stderr
     check(True)
+    canonical = package.read_bytes()
+    source = (root / "main.lua").read_bytes()
+    (root / "main.lua").write_bytes(source.replace(b"\n", b"\r\n"))
+    assert compile_project(project, root) == canonical, "Lua package depends on host line endings"
+    (root / "main.lua").write_bytes(source)
     results = []
     for i in range(2):
         image = root / f"game{i}.ppm"
