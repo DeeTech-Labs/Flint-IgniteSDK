@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="../../readme">Русская версия</a> &nbsp; / &nbsp;
+  <a href="../../README.md">Русская версия</a> &nbsp; / &nbsp;
   <a href="https://flint.deetech.ru/">Website</a> &nbsp; / &nbsp;
   <a href="https://github.com/DeeTech-Labs">DeeTech Labs</a>
 </p>

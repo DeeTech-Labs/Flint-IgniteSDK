@@ -115,7 +115,7 @@ if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
 endif()
 
 # Keep the mixed-license scope, legal originals and operative permissions together.
-install(FILES LICENSE NOTICE readme DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK)
+install(FILES LICENSE NOTICE README.md DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK)
 install(DIRECTORY LICENSES/ DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/LICENSES)
 install(DIRECTORY docs/ru docs/en
     DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/docs
