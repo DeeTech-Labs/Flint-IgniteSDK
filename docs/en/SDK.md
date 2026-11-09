@@ -116,7 +116,7 @@ Marketplace signatures and publication remain separate work.
 
 `"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua project's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Development revision `0x20261105`, package/scene formats and Companion method identifiers are unchanged: this is an additive extension and old packages retain their previous Lua environment. Consumers must deliberately update their SDK pin and rebuild C++ adapters; the ABI of extended C++ classes is not preserved.
 
-New functions require `CapAppApi`. Invalid argument counts/types, ranges and UTF-8 terminate the handler with a diagnostic. Service/access failures return numeric `flint::Error` codes: 0=ok, 4=not_supported, 5=permission_denied, 8=source_unavailable, 9=quota_exceeded; see `include/flint/contracts.h` for the complete enumeration. No standard libraries or unrestricted `require`, `debug`, `io`, `os` are exposed.
+New functions require `CapAppApi`. Invalid argument counts/types, ranges and UTF-8 terminate the handler with a diagnostic. Service/access failures return numeric `flint::Error` codes: 0=ok, 4=not_supported, 5=permission_denied, 7=source_unavailable, 9=quota_exceeded; see `include/flint/contracts.h` for the complete enumeration. No standard libraries or unrestricted `require`, `debug`, `io`, `os` are exposed.
 
 ### Events and lifecycle
 
