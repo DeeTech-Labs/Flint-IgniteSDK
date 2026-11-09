@@ -9,6 +9,12 @@ struct Glyph {
     int width = 0, height = 0, advance = 0, ascent = 0, left = 0;
     const uint8_t *alpha = nullptr;
 };
+struct GlyphMetrics {
+    int width{}, height{}, advance{}, ascent{}, left{};
+    bool valid{};
+};
+using MetricsResolver = GlyphMetrics (*)(void *, unsigned, uint32_t);
+inline thread_local MetricsResolver resourceMetrics = nullptr;
 const uint8_t *fontData(unsigned font);
 uint32_t fontPixelOffset(unsigned font, unsigned index);
 using GlyphResolver = Glyph (*)(void *, unsigned, uint32_t);
@@ -60,19 +66,33 @@ inline uint32_t nextCodepoint(const uint8_t *text, size_t n, size_t &cursor) {
     }
     return cp;
 }
+inline GlyphMetrics metrics(unsigned font, uint32_t cp) {
+    if (font >= 4 && resourceMetrics) {
+        const auto result = resourceMetrics(resourceContext, font, cp);
+        if (result.valid)
+            return result;
+        font = Body;
+        cp = '?';
+    }
+    const auto g = glyph(font, cp);
+    return {g.width, g.height, g.advance, g.ascent, g.left, g.alpha != nullptr};
+}
 inline int textWidth(unsigned font, const uint8_t *text, size_t n) {
     int w = 0;
     size_t i = 0;
     while (i < n)
-        w += glyph(font, nextCodepoint(text, n, i)).advance;
+        w += metrics(font, nextCodepoint(text, n, i)).advance;
     return w;
 }
 struct Bounds {
     int x = 0, y = 0, w = 0, h = 0;
 };
 inline Bounds bounds(const Scene &s, const Op &op) {
-    if (op.kind == Text && op.font >= 4)
+    if (op.kind == Text && op.font >= 4) {
+        if (op.inkW >= 0)
+            return {op.x + op.inkX, op.y + op.inkY, op.inkW, op.inkH};
         return {0, 0, s.width, s.height};
+    }
     if (op.kind == Text) {
         const int w = textWidth(op.font, s.data + op.offset, op.length);
         const auto *f = fontData(op.font);
@@ -89,7 +109,9 @@ inline Bounds dirty(const Scene &a, const Scene &b) {
     for (int i = 0; i < b.count; ++i) {
         auto x = a.ops[i], y = b.ops[i];
         x.offset = y.offset = 0;
-        if (memcmp(&x, &y, sizeof(Op)) == 0 && a.ops[i].length == b.ops[i].length &&
+        if (x.kind == y.kind && x.font == y.font && x.x == y.x && x.y == y.y && x.w == y.w &&
+            x.h == y.h && x.color == y.color && x.length == y.length && x.extra == y.extra &&
+            x.inkX == y.inkX && x.inkY == y.inkY && x.inkW == y.inkW && x.inkH == y.inkH &&
             !memcmp(a.data + a.ops[i].offset, b.data + b.ops[i].offset, b.ops[i].length))
             continue;
         for (const auto r : {bounds(a, a.ops[i]), bounds(b, b.ops[i])}) {

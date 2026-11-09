@@ -3,6 +3,31 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <new>
+static bool trackAllocations = false;
+static size_t allocations = 0;
+void *operator new(std::size_t size) {
+    if (trackAllocations)
+        ++allocations;
+    if (auto *p = std::malloc(size ? size : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t size) {
+    return ::operator new(size);
+}
+void operator delete(void *p) noexcept {
+    std::free(p);
+}
+void operator delete[](void *p) noexcept {
+    std::free(p);
+}
+void operator delete(void *p, std::size_t) noexcept {
+    std::free(p);
+}
+void operator delete[](void *p, std::size_t) noexcept {
+    std::free(p);
+}
 using namespace flint;
 #define CHECK(x)                                                                                   \
     do {                                                                                           \
@@ -124,6 +149,12 @@ int main(int argc, char **argv) {
     CHECK(request(Method::metrics, metrics.data) == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
+    allocations = 0;
+    trackAllocations = true;
+    for (unsigned frame = 0; frame < 10; ++frame)
+        CHECK(core.scene(scene) == Error::ok);
+    trackAllocations = false;
+    CHECK(allocations == 0); // No catalog scan, bindings copy or temporary strings per frame.
     CHECK(grant(false) == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU") == std::string::npos);
@@ -187,11 +218,36 @@ int main(int argc, char **argv) {
     }
     Writer remove;
     remove.text("test.monitor");
+    CHECK(core.launch("system.launcher", "main") == Error::ok);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("PC Monitor") != std::string::npos);
     CHECK(request(Method::remove, remove.data) == Error::ok);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("PC Monitor") == std::string::npos);
+    CHECK(core.launch("system.clock", "main") == Error::ok);
     CHECK(core.runtime().manifest().id == "system.clock");
     CHECK(core.packages().locate("test.monitor", current) == Error::source_unavailable);
     CHECK(request(Method::recover) == Error::ok);
     CHECK(core.runtime().manifest().id == "system.clock");
+    // Bounded substitutions preserve literal values, missing-key fallback and output on failure.
+    Runtime bound;
+    CHECK(bound.launch({{}, root + "/bindings.ignit", false}, "main", platform.memory,
+              platform.capabilities) == Error::ok);
+    Values values{{"input", "${not-recursive}"}};
+    CHECK(bound.render(values, scene) == Error::ok);
+    CHECK(text(scene) == "X${not-recursive}Y:resource:—");
+    allocations = 0;
+    trackAllocations = true;
+    CHECK(bound.render(values, scene) == Error::ok);
+    trackAllocations = false;
+    CHECK(allocations == 0);
+    const auto unchanged = text(scene);
+    values["input"] = std::string(192, 'x');
+    CHECK(bound.render(values, scene) == Error::quota_exceeded && text(scene) == unchanged);
+    values["input"] = std::string("a\0b", 3);
+    CHECK(bound.render(values, scene) == Error::quota_exceeded && text(scene) == unchanged);
+    values["input"] = "";
+    CHECK(bound.render(values, scene) == Error::ok && text(scene) == "XY:resource:—");
     // Framing: fragmentation, noise, invalid CRC and concatenated frames.
     Frame original{Method::info, 42, false, {1, 2, 3}};
     auto wire = encodeFrame(original);

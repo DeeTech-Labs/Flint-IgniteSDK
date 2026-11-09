@@ -147,12 +147,17 @@ def atlas(path, size, chars):
 
 def compile_project(project, root):
     allowed = {"id", "name", "publisher", "version", "budget", "permissions",
-               "components", "resources", "capabilities", "logic"}
+               "components", "resources", "capabilities", "logic", "app_api"}
     if set(project) - allowed:
         raise ValueError("unknown project fields: " + ", ".join(sorted(set(project) - allowed)))
     unsupported = {"logic", "javascript", "lua", "code", "script", "styles", "css"}
     if (unsupported - {"logic"}).intersection(project):
         raise ValueError("executable code and stylesheet compilation are not supported yet")
+    app_api = project.get("app_api", 0)
+    if type(app_api) is not int or app_api not in (0, 1):
+        raise ValueError("app_api must be 0 or 1")
+    if app_api and "logic" not in project:
+        raise ValueError("app_api requires Lua logic")
     identifier(project["id"])
     identifier(project["publisher"])
     budget = project.get("budget", {})
@@ -173,7 +178,7 @@ def compile_project(project, root):
             budget.get("internal", 24 * 1024),
             budget.get("external", 0),
             budget.get("instructions", 4096),
-            project.get("capabilities", 1),
+            project.get("capabilities", 1) | (128 if app_api else 0),
         )
     )
     manifest.extend(struct.pack("<H", len(permissions)))
@@ -201,6 +206,8 @@ def compile_project(project, root):
             )
         )
         if "ui" in component:
+            if not app_api and any("id" in node for node in component["ui"]):
+                raise ValueError("UI node IDs require app_api=1")
             kind = "ui"
             data = scene(component["ui"])
         elif "values" in component:
@@ -254,6 +261,21 @@ def compile_project(project, root):
         if not data or len(data) > 16384 or data.startswith(b"\x1b") or b"\0" in data:
             raise ValueError("Lua requires text source of 1..16384 bytes")
         data.decode("utf-8")
+        if app_api:
+            names = {}
+            for index, node in enumerate(components[0].get("ui", []), 1):
+                if "id" in node:
+                    name = node["id"]
+                    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) or name in names:
+                        raise ValueError("UI IDs must be unique names of 1..32 lowercase ASCII characters")
+                    names[name] = index
+            # A lexical table: no new binary format, no executable metadata in firmware.
+            prefix = "local ui={" + ",".join('["' + k + '"]=' + str(v) for k, v in sorted(names.items())) + "}; "
+            data = prefix.encode("ascii") + data
+            if len(data) > 16384:
+                raise ValueError("Lua source including UI names exceeds 16384 bytes")
+        elif any("id" in node for node in components[0].get("ui", [])):
+            raise ValueError("UI node IDs require app_api=1")
         sections.append((max(used) + 1, "lua", data))
     return build([(1, "manifest", bytes(manifest)), *sections])
 

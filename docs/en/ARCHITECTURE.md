@@ -32,6 +32,14 @@ Compiled UI supports rectangles, rounded rectangles, lines, text, small masks an
 
 The scene description and built-in rasterizer/font algorithms were retained as portable graphics primitives. The old FaceRegistry, fixed layouts, IgnitDefinition, three-slot manager, textual installer and command parser were removed.
 
+The resource cache holds 32 views with round-robin eviction: a full cache does not limit accessible sections. FLIM reads cover only the intersection of the image, screen and `Canvas::clip`. FLGF metrics and bitmaps are read separately; the metrics cache holds 16 glyphs and resets on package rebinding. Runtime stores derived resource-text bounds in the in-memory `Op::ink*` fields. These fields are not serialized; decoded scenes without derived bounds retain conservative full-screen invalidation.
+
+Runtime parses `${...}` at launch: an unclosed substitution returns `invalid_package`, and more than 32 substitutions in an operation returns `execution_limit`. The fixed substitution-end table uses 1024 bytes; text assembly uses bounded buffers without copying `Values`. Lua updates keep the same frequency, but unchanged properties and published values do not request repaint. Core reuses bindings between changes to time, settings, catalog and external data. Catalog traversal caches up to 32 factory IDs per visit; larger factory catalogs fall back to scanning to preserve factory identity protection.
+
+`PackageManager::revision()` invalidates catalog caches after `begin()` and successful commit/remove/rollback. The launcher summary retains its existing string limit; full manifests are not retained. Metrics identity is cached per Runtime generation and catalog revision and checked against the loaded package; declarations, capabilities, application state and live grants are checked on every access. Files changed outside PackageManager require reinitialization through `begin()` and restarting the affected application. SHA-256 still does not authenticate publishers.
+
+Wire formats, nominal versions and ContractRevision are unchanged. C++ object sizes (including `Op`, `Runtime`, `Core`) changed, and `Values` now uses a transparent comparator (`std::less<>`); rebuild SDK and consumers of its headers together. Custom renderer integrations should set `resourceMetrics` alongside `resourceGlyph` to avoid reading bitmaps during measurement. The added caches are bounded; memory capacity and latency on a specific board still require separate validation.
+
 ## Storage and recovery
 
 Factory packages are read-only filesystem contents built with the firmware. User packages are immutable objects named by their container digest. Each user package has an atomic `.ref` and a previous-version reference. Installation uses `incoming.part`, durable block writes, a complete-file transfer digest, container/manifest/UI validation, then an atomic reference commit. Repeating a block is allowed only when its existing bytes match. Reopening the same transfer resumes at its durable offset.
@@ -98,3 +106,7 @@ does not claim measured device fit or publisher authenticity.
 ## Licensing and language policy
 
 See [licensing scope](LICENSING.md). Russian is canonical; this is the English translation. Earlier license grants remain intact.
+
+## Application API 1
+
+This additive Lua extension requires capability 128; binary formats, protocol identifiers and ContractRevision are unchanged. Runtime owns the input queue (16), timers (8), bounded string values and diagnostics. Core implements authorized read-only services and private package storage (16 keys, 4096 bytes, atomic replacement, CRC-32, one successful write per second per Core). Callbacks in a tick share the instruction budget; service calls are capped at 32. Adapters use postInput and nextWake; hardware integration remains in consumers. C++ class sizes changed and require rebuilding consumers. Additional fixed structures and storage temporaries do not expand the Lua heap: the existing 16 KiB deduction is unchanged, but total native peaks/stack need new device measurements. See [SDK.md](SDK.md#application-api-1-input-state-and-services) for the full contract and limits. The simulator executes the same Core/Runtime with virtual-time scenarios.

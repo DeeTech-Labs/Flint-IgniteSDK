@@ -5,7 +5,7 @@ namespace flint {
 inline constexpr uint64_t CapDeclarative = 1, CapResources = 2, CapPackages = 4, CapMetrics = 8,
                           CapUsb = 16, CapBle = 32;
 #ifdef FLINT_ENABLE_LUA
-inline constexpr uint64_t HostLogicCapabilities = CapLua;
+inline constexpr uint64_t HostLogicCapabilities = CapLua | CapAppApi;
 #else
 inline constexpr uint64_t HostLogicCapabilities = 0;
 #endif
@@ -18,6 +18,8 @@ struct Platform {
     std::function<uint64_t()> free_storage;
     std::function<Values()> diagnostics;
     std::function<Bytes(std::string_view)> pairing;
+    // Read-only power fields supplied by the device adapter; absent means unsupported.
+    std::function<Error(std::string_view, AppReply &)> power;
 };
 struct Session {
     bool authenticated{}, compatible{};
@@ -39,16 +41,30 @@ class Core {
     double cpu_{}, ram_{};
     uint64_t metricAt_{};
     bool haveMetrics_{};
-    uint64_t logicAt_{};
     Error lastLogicError_{Error::ok};
+    LuaDiagnostic lastDiagnostic_{};
+    std::string lastLogicPackage_, lastLogicComponent_;
+    uint64_t privateWriteAt_{};
+    bool privateWritten_{};
     uint64_t renderedMinute_{~uint64_t(0)};
+    Error appCall(
+        AppService service, std::string_view key, std::string_view value, AppReply &reply);
     Error activateRole(Role role, std::string_view selection = {});
     Error persistSettings();
     Error persistGrants();
     Error revokePackage(std::string_view id);
     void refreshProviders(std::string_view id, bool removed);
+    Principal metricPrincipal_{};
+    uint64_t metricRuntime_{~uint64_t(0)}, metricCatalog_{~uint64_t(0)};
+    bool metricIdentityValid_{}, metricFactory_{};
+    std::string launcher_;
+    uint64_t launcherCatalog_{~uint64_t(0)};
     bool canReceiveMetrics();
-    Values bindings();
+    Values bindings_;
+    uint64_t bindingsRuntime_{~uint64_t(0)}, bindingsMinute_{~uint64_t(0)},
+        bindingsCatalog_{~uint64_t(0)};
+    bool bindingsDirty_{true}, bindingsMetrics_{};
+    const Values &bindings();
 
 public:
     Core(std::string storage, std::string factory, Platform platform);
@@ -65,6 +81,13 @@ public:
         return runtime_;
     }
     bool tick();
+    Error postInput(InputEvent event) {
+        return runtime_.postInput(event);
+    }
+    uint64_t nextWake() const;
+    Error lastLogicError() const {
+        return lastLogicError_;
+    }
     uint64_t now() const;
     const Platform &platform() const {
         return platform_;

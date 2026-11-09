@@ -127,6 +127,7 @@ static void collectObjects(const std::string &root) {
         unlink((root + "/" + temporary).c_str());
 }
 Error PackageManager::begin() {
+    ++revision_;
     if (!mkdirOne(root_))
         return Error::io_error;
     for (auto &ref : files(root_, ".ref")) {
@@ -185,11 +186,19 @@ static void scan(const std::string &path, std::string_view suffix,
 #endif
 }
 void PackageManager::visit(const std::function<bool(const Installed &)> &visitor) const {
+    // Keep a bounded set of factory identities, not full manifests or package contents.
+    std::array<std::string, 32> protectedIds;
+    size_t protectedCount = 0;
+    bool complete = true;
     bool proceed = true;
     scan(factory_, ".ignit", [&](const auto &name) {
         Manifest manifest;
         const auto path = factory_ + "/" + name;
         if (inspect(path, manifest) == Error::ok) {
+            if (protectedCount < protectedIds.size())
+                protectedIds[protectedCount++] = manifest.id;
+            else
+                complete = false;
             proceed = visitor({std::move(manifest), path, true});
         }
         return proceed;
@@ -211,16 +220,18 @@ void PackageManager::visit(const std::function<bool(const Installed &)> &visitor
         if (inspect(path, manifest) != Error::ok || manifest.id != id) {
             return true;
         }
-        bool protectedId = false;
-        scan(factory_, ".ignit", [&](const auto &factoryName) {
-            Manifest factoryManifest;
-            if (inspect(factory_ + "/" + factoryName, factoryManifest) == Error::ok &&
-                factoryManifest.id == id) {
-                protectedId = true;
-                return false;
-            }
-            return true;
-        });
+        bool protectedId = std::find(protectedIds.begin(), protectedIds.begin() + protectedCount,
+                               id) != protectedIds.begin() + protectedCount;
+        if (!complete && !protectedId)
+            scan(factory_, ".ignit", [&](const auto &factoryName) {
+                Manifest factoryManifest;
+                if (inspect(factory_ + "/" + factoryName, factoryManifest) == Error::ok &&
+                    factoryManifest.id == id) {
+                    protectedId = true;
+                    return false;
+                }
+                return true;
+            });
         return protectedId || visitor({std::move(manifest), path, false});
     });
 }
@@ -237,15 +248,27 @@ Error PackageManager::locate(std::string_view id, Installed &result) const {
         return Error::invalid_argument;
     }
     bool found = false;
-    visit([&](const Installed &installed) {
-        if (installed.manifest.id == id) {
-            result = installed;
+    scan(factory_, ".ignit", [&](const auto &name) {
+        Manifest manifest;
+        const auto path = factory_ + "/" + name;
+        if (inspect(path, manifest) == Error::ok && manifest.id == id) {
+            result = {std::move(manifest), path, true};
             found = true;
             return false;
         }
         return true;
     });
-    return found ? Error::ok : Error::source_unavailable;
+    if (found)
+        return Error::ok;
+    const auto object = readText(root_ + "/" + std::string(id) + ".ref");
+    if (!objectName(object))
+        return Error::source_unavailable;
+    const auto path = root_ + "/" + object;
+    Manifest manifest;
+    if (inspect(path, manifest) != Error::ok || manifest.id != id)
+        return Error::source_unavailable;
+    result = {std::move(manifest), path, false};
+    return Error::ok;
 }
 Error PackageManager::commit(const std::string &staging, std::string &id) {
     if (staging != this->staging())
@@ -287,6 +310,7 @@ Error PackageManager::commit(const std::string &staging, std::string &id) {
         return Error::io_error;
     if (!writeAtomic(ref, {reinterpret_cast<const uint8_t *>(object.data()), object.size()}))
         return Error::io_error;
+    ++revision_;
     collectObjects(root_);
     id = m.id;
     return Error::ok;
@@ -300,9 +324,13 @@ Error PackageManager::remove(std::string_view id) {
         return error;
     if (p.factory)
         return Error::permission_denied;
+    const auto data = root_ + "/app-" + std::string(id) + ".kv";
+    if (unlink(data.c_str()) && errno != ENOENT)
+        return Error::io_error;
     auto ref = root_ + "/" + std::string(id) + ".ref";
     if (unlink(ref.c_str()))
         return Error::io_error;
+    ++revision_;
     unlink((ref + ".previous").c_str());
     // Immutable objects can be shared by current/previous refs. Delete only unreferenced objects.
     for (auto &object : files(root_, ".ignit")) {
@@ -330,8 +358,72 @@ Error PackageManager::rollback(std::string_view id) {
     auto error = inspect(root_ + "/" + previous, m);
     if (error != Error::ok || m.id != id)
         return Error::invalid_package;
-    return writeAtomic(ref, {reinterpret_cast<const uint8_t *>(previous.data()), previous.size()})
-        ? Error::ok
-        : Error::io_error;
+    if (!writeAtomic(ref, {reinterpret_cast<const uint8_t *>(previous.data()), previous.size()}))
+        return Error::io_error;
+    ++revision_;
+    return Error::ok;
+}
+Error privateStorage(const std::string &root, const Manifest &manifest, AppService operation,
+    std::string_view key, std::string_view value, AppReply &reply) {
+    if (!identifier(manifest.id) || !identifier(manifest.publisher) || !appKey(key) ||
+        value.size() > MaxAppString || !appText(value))
+        return Error::invalid_argument;
+    if (operation != AppService::storage_get && operation != AppService::storage_set &&
+        operation != AppService::storage_delete)
+        return Error::not_supported;
+    const auto path = root + "/app-" + manifest.id + ".kv";
+    std::map<std::string, std::string, std::less<>> values;
+    struct stat st{};
+    if (stat(path.c_str(), &st) == 0) {
+        if (!S_ISREG(st.st_mode) || st.st_size < 4 || st.st_size > 4096)
+            return Error::invalid_package;
+        const auto data = readText(path, 4096);
+        if (data.size() != size_t(st.st_size))
+            return Error::io_error;
+        const std::span bytes(reinterpret_cast<const uint8_t *>(data.data()), data.size());
+        Reader checksum{bytes.last(4)};
+        if (crc32(bytes.first(bytes.size() - 4)) != checksum.n())
+            return Error::integrity_failed;
+        Reader r{bytes.first(bytes.size() - 4)};
+        if (r.n() != 0x31564b46)
+            return Error::invalid_package; // FKV1
+        if (r.text(64) != manifest.id || r.text(64) != manifest.publisher)
+            return Error::permission_denied;
+        const auto count = r.n(2);
+        if (count > 16)
+            return Error::invalid_package;
+        for (size_t i = 0; i < count; ++i) {
+            const auto k = r.text(32), v = r.text(MaxAppString);
+            if (!appKey(k) || !appText(v) || !values.emplace(k, v).second)
+                return Error::invalid_package;
+        }
+        if (!r.done())
+            return Error::invalid_package;
+    } else if (errno != ENOENT)
+        return Error::io_error;
+    const auto found = values.find(key);
+    if (operation == AppService::storage_get)
+        return found == values.end() ? Error::source_unavailable : reply.assign(found->second);
+    if (operation == AppService::storage_set) {
+        if (found == values.end() && values.size() == 16)
+            return Error::quota_exceeded;
+        values[std::string(key)] = value;
+    } else if (found != values.end())
+        values.erase(found);
+    else
+        return Error::source_unavailable;
+    Writer w;
+    w.n(0x31564b46);
+    w.text(manifest.id);
+    w.text(manifest.publisher);
+    w.n(values.size(), 2);
+    for (const auto &[k, v] : values) {
+        w.text(k);
+        w.text(v);
+    }
+    w.n(crc32(w.data));
+    if (w.data.size() > 4096)
+        return Error::quota_exceeded;
+    return writeAtomic(path, w.data) ? Error::ok : Error::io_error;
 }
 } // namespace flint

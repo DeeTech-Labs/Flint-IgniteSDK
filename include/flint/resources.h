@@ -11,12 +11,22 @@ class ResourceManager {
     uint64_t generation_{};
     std::array<uint8_t, 4096> glyph_{};
     mutable std::array<Package::View, 32> views_{};
+    mutable size_t nextView_{};
+    struct GlyphInfo {
+        uint32_t font{}, codepoint{}, offset{}, size{};
+        FlintRender::GlyphMetrics metrics{};
+    };
+    std::array<GlyphInfo, 16> metrics_{};
+    size_t nextMetric_{};
+    GlyphInfo lookup(unsigned font, uint32_t codepoint);
     Error view(uint32_t id, Package::View &result) const;
 
 public:
     void bind(Package *package) {
         package_ = package;
         views_ = {};
+        metrics_ = {};
+        nextView_ = nextMetric_ = 0;
         ++generation_;
     }
     ResourceHandle handle(uint32_t id) const {
@@ -25,6 +35,8 @@ public:
     Error read(ResourceHandle handle, uint32_t offset, std::span<uint8_t> bytes);
     Error find(uint32_t id, Entry &entry) const;
     void image(FlintRender::Canvas &canvas, const FlintRender::Op &op);
+    FlintRender::GlyphMetrics metrics(unsigned font, uint32_t codepoint);
+    void textBounds(FlintRender::Op &op, const uint8_t *text, size_t length);
     FlintRender::Glyph glyph(unsigned font, uint32_t codepoint);
 };
 } // namespace flint

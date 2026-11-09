@@ -1,0 +1,19 @@
+{
+    "steps": [
+        {"op": "expect_text", "text": "Count: 0"},
+        {"op": "input", "kind": "press"},
+        {"op": "expect_text", "text": "Count: 1"},
+        {"op": "input", "kind": "press"},
+        {"op": "expect_text", "text": "Saving..."},
+        {"op": "advance", "ms": 1000},
+        {"op": "expect_text", "text": "Saved"},
+        {"op": "restart"},
+        {"op": "expect_text", "text": "Count: 2"},
+        {"op": "suspend"},
+        {"op": "expect_state", "state": "suspended"},
+        {"op": "advance", "ms": 10000},
+        {"op": "resume"},
+        {"op": "reboot"},
+        {"op": "expect_text", "text": "Count: 2"}
+    ]
+}

@@ -101,6 +101,17 @@ def main():
         }
         (root / "font.ttf").write_bytes(font.read_bytes())
         (root / "resources.ignit").write_bytes(compile_project(custom, root))
+        bindings = {
+            "id": "test.bindings", "name": "Bindings", "publisher": "tests", "version": 1,
+            "permissions": ["ui.render", "ui.resources"],
+            "components": [{"id": "main", "type": "app", "ui": [
+                {"kind": "rect", "w": 280, "h": 240, "color": "#000000"},
+                {"kind": "text", "text": "X${input}Y:${resource:6}:${missing}", "color": "#ffffff"}
+            ]}],
+            "resources": [{"id": 6, "path": "value.txt"}],
+        }
+        (root / "value.txt").write_text("resource", encoding="utf-8")
+        (root / "bindings.ignit").write_bytes(compile_project(bindings, root))
         subprocess.run([sys.argv[1], str(root)], check=True)
 
 

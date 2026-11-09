@@ -13,6 +13,8 @@ struct Op {
     uint8_t kind = 0, font = 0;
     int16_t x = 0, y = 0, w = 0, h = 0;
     uint16_t color = 0, offset = 0, length = 0, extra = 0;
+    // Derived resource-text ink bounds relative to (x,y); absent after wire decoding.
+    int16_t inkX = 0, inkY = 0, inkW = -1, inkH = 0;
 };
 struct Scene {
     uint16_t width = 280, height = 240, used = 0;
@@ -21,7 +23,8 @@ struct Scene {
     Op ops[MaxOps]{};
     uint8_t data[MaxData]{};
     bool add(Op op, const void *bytes = nullptr, size_t length = 0) {
-        if (!valid || count >= MaxOps || used + length > MaxData) {
+        if (!valid || count >= MaxOps || used > MaxData || length > size_t(MaxData - used) ||
+            (length && !bytes)) {
             valid = false;
             return false;
         }

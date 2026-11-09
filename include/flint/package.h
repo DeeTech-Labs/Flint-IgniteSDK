@@ -31,6 +31,7 @@ class Package {
     uint32_t count_{};
     bool valid_{};
     uint64_t generation_{};
+    uint64_t identity_{};
 
 public:
     class View {
@@ -55,6 +56,9 @@ public:
                 : Error::io_error;
         }
     };
+    uint64_t identity() const {
+        return valid_ ? identity_ : 0;
+    }
     void close() {
         valid_ = false;
         ++generation_;
@@ -158,6 +162,9 @@ public:
             valid_ = false;
             return Error::integrity_failed;
         }
+        identity_ = 0;
+        for (unsigned i = 0; i < 8; ++i)
+            identity_ |= uint64_t(digest[i]) << (8 * i);
         return Error::ok;
     }
     Error read(const Entry &entry, uint32_t offset, std::span<uint8_t> bytes) const {

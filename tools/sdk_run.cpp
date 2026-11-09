@@ -1,57 +1,252 @@
 #include <charconv>
-#include <flint/runtime.h>
+#include <chrono>
+#include <filesystem>
+#include <flint/core.h>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <sstream>
 #include <vector>
+namespace {
+bool number(std::string_view text, uint64_t &out) {
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+bool hex(std::string_view text, std::string &out) {
+    if (text == "-") {
+        out.clear();
+        return true;
+    }
+    if (text.size() > 384 || text.size() % 2)
+        return false;
+    out.clear();
+    for (size_t i = 0; i < text.size(); i += 2) {
+        unsigned value{};
+        const auto result = std::from_chars(text.data() + i, text.data() + i + 2, value, 16);
+        if (result.ec != std::errc{} || result.ptr != text.data() + i + 2)
+            return false;
+        out.push_back(char(value));
+    }
+    return flint::appText(out);
+}
+struct Temporary {
+    std::filesystem::path path;
+    ~Temporary() {
+        if (!path.empty()) {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    }
+};
+} // namespace
 int main(int argc, char **argv) {
-    if (argc != 5) {
-        std::cerr << "Usage: ignite-run package.ignit frames press-every output.ppm\n";
+    if (argc != 5 && !(argc == 8 && std::string_view(argv[5]) == "--scenario")) {
+        std::cerr << "Usage: ignite-run package.ignit frames press-every output.ppm [--scenario "
+                     "storage factory]\n";
         return 2;
     }
-    unsigned frames{}, interval{};
-    auto parse = [](const char *text, unsigned &out) {
-        auto end = text + std::char_traits<char>::length(text);
-        auto result = std::from_chars(text, end, out);
-        return result.ec == std::errc{} && result.ptr == end;
-    };
-    if (!parse(argv[2], frames) || !parse(argv[3], interval) || !frames || frames > 3600 ||
+    const bool scenario = argc == 8;
+    uint64_t frames{}, interval{};
+    if (!number(argv[2], frames) || !number(argv[3], interval) || !frames || frames > 3600 ||
         interval > 3600)
+        return 2;
+    std::error_code fsError;
+    if (std::filesystem::equivalent(argv[1], argv[4], fsError))
         return 2;
     flint::File file;
     flint::Package package;
     flint::Manifest manifest;
     constexpr auto max = std::numeric_limits<uint32_t>::max();
+    flint::Platform platform;
+    platform.build_id = "ignite-simulator";
+    platform.memory = {max, max, max};
+    uint64_t now = 1000;
+    platform.monotonic = [&] { return now; };
     if (!file.open(argv[1]) || file.size > flint::MaxPackageBytes ||
         package.open(file.source()) != flint::Error::ok ||
-        flint::validateApplication(package, manifest, {max, max, max}, UINT64_MAX) !=
+        flint::validateApplication(package, manifest, platform.memory, platform.capabilities) !=
             flint::Error::ok)
         return 1;
-    flint::Runtime runtime;
-    if (runtime.launch({manifest, argv[1], false}, manifest.components[0].id, {max, max, max},
-            UINT64_MAX) != flint::Error::ok ||
-        !runtime.scripted())
+    Temporary temporary;
+    std::string storage, factory;
+    if (scenario) {
+        storage = argv[6];
+        factory = argv[7];
+    } else {
+        auto base = std::filesystem::temp_directory_path(fsError);
+        if (fsError)
+            return 1;
+        for (unsigned attempt = 0; attempt < 16; ++attempt) {
+            auto candidate = base /
+                ("ignite-sim-" +
+                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                    "-" + std::to_string(attempt));
+            if (std::filesystem::create_directory(candidate, fsError)) {
+                temporary.path = candidate;
+                break;
+            }
+        }
+        if (temporary.path.empty())
+            return 1;
+        storage = temporary.path.string();
+        factory = (temporary.path / "factory").string();
+    }
+    std::unique_ptr<flint::Core> core;
+    const auto begin = [&] {
+        core = std::make_unique<flint::Core>(storage, factory, platform);
+        const auto error = core->begin();
+        return error == flint::Error::ok || error == flint::Error::source_unavailable;
+    };
+    if (!begin())
+        return 1;
+    flint::Installed installed;
+    const auto found = core->packages().locate(manifest.id, installed);
+    if (found == flint::Error::ok && installed.manifest.version == manifest.version) {
+        flint::File previous;
+        flint::Package previousPackage;
+        std::array<uint8_t, 64> previousHeader{}, currentHeader{};
+        if (!previous.open(installed.path) ||
+            previousPackage.open(previous.source()) != flint::Error::ok ||
+            !previous.source().read(&previous, 0, previousHeader) ||
+            !file.source().read(&file, 0, currentHeader) || previousHeader != currentHeader)
+            return 1;
+    } else {
+        if (!std::filesystem::copy_file(argv[1], core->packages().staging(),
+                std::filesystem::copy_options::overwrite_existing, fsError) ||
+            fsError)
+            return 1;
+        std::string id;
+        if (core->packages().commit(core->packages().staging(), id) != flint::Error::ok)
+            return 1;
+    }
+    const auto launch = [&] { return core->launch(manifest.id, manifest.components[0].id); };
+    if (launch() != flint::Error::ok || !core->runtime().scripted())
         return 1;
     FlintRender::Scene scene;
-    for (unsigned i = 0; i < frames; ++i) {
-        if (runtime.update(33, interval && i % interval == 0) != flint::Error::ok ||
-            runtime.render({}, scene) != flint::Error::ok) {
-            std::cerr << "Lua application failed at frame " << i << '\n';
-            return 1;
+    size_t steps = 0;
+    if (scenario) {
+        // Host-only scenario transport. The public CLI validates JSON and emits bounded tokens.
+        std::array<char, 1026> line{};
+        while (std::cin.getline(line.data(), line.size())) {
+            if (++steps > 4096)
+                return 2;
+            std::istringstream input(line.data());
+            std::string op, a, b, c, trailing;
+            input >> op;
+            flint::Error error = flint::Error::ok;
+            bool valid = true;
+            uint64_t value{}, expected{};
+            if (op == "advance") {
+                input >> a;
+                valid = number(a, value) && value <= 86400000 && value <= UINT64_MAX - now;
+                if (valid) {
+                    now += value;
+                    core->tick();
+                }
+            } else if (op == "input") {
+                input >> a >> b >> c;
+                int32_t amount{};
+                const auto parsed = std::from_chars(b.data(), b.data() + b.size(), amount);
+                valid = parsed.ec == std::errc{} && parsed.ptr == b.data() + b.size() &&
+                    number(c, expected);
+                bool known = false;
+                for (unsigned kind = 0; kind <= unsigned(flint::InputKind::focus_gained); ++kind) {
+                    if (flint::inputName(flint::InputKind(kind)) != a)
+                        continue;
+                    known = true;
+                    if (valid)
+                        error = core->postInput(
+                            {flint::InputKind(kind), amount, core->runtime().generation()});
+                }
+                valid &= known;
+                if (error == flint::Error::ok && valid)
+                    core->tick();
+            } else if (op == "suspend")
+                error = core->runtime().suspend();
+            else if (op == "resume")
+                error = core->runtime().resume();
+            else if (op == "restart")
+                error = launch();
+            else if (op == "reboot") {
+                core.reset();
+                if (!begin())
+                    return 1;
+                error = launch();
+            } else if (op == "expect_text") {
+                input >> a;
+                std::string text;
+                valid = hex(a, text);
+                error = core->scene(scene);
+                if (error == flint::Error::ok) {
+                    bool foundText = false;
+                    for (unsigned i = 0; i < scene.count; ++i) {
+                        const auto &node = scene.ops[i];
+                        if (node.kind == FlintRender::Text &&
+                            std::string_view(
+                                reinterpret_cast<const char *>(scene.data + node.offset),
+                                node.length)
+                                    .find(text) != std::string_view::npos)
+                            foundText = true;
+                    }
+                    valid &= foundText;
+                }
+            } else if (op == "expect_state") {
+                input >> a;
+                valid = a == "active" ? core->runtime().state() == flint::State::active
+                    : a == "suspended"
+                    ? core->runtime().state() == flint::State::suspended
+                    : a == "empty" && core->runtime().state() == flint::State::empty;
+            } else if (op == "expect_error") {
+                input >> a;
+                valid = number(a, value) && value == uint16_t(core->lastLogicError());
+            } else if (op == "permission") {
+                input >> a >> b >> c;
+                std::string scope;
+                valid = hex(b, scope) && (c == "0" || c == "1");
+                flint::Writer writer;
+                writer.text(manifest.id);
+                writer.text(a);
+                writer.text(scope);
+                writer.n(c == "1", 1);
+                flint::Session session{true, true, 1};
+                const auto response = core->handle(
+                    {flint::Method::permission_set, uint32_t(steps), false, writer.data}, session);
+                flint::Reader reader{response.payload};
+                error = flint::Error(reader.n(2));
+            } else
+                valid = false;
+            if (input >> trailing)
+                valid = false;
+            if (!valid || uint16_t(error) != expected) {
+                std::cerr << "Scenario failed at step " << steps << " (" << op << "), error "
+                          << uint16_t(error) << '\n';
+                return 1;
+            }
+        }
+        if (!std::cin.eof())
+            return 2;
+    } else {
+        for (uint64_t i = 0; i < frames; ++i) {
+            if (interval && i % interval == 0 &&
+                core->postInput({flint::InputKind::press, 1, core->runtime().generation()}) !=
+                    flint::Error::ok)
+                return 1;
+            now += 33;
+            core->tick();
+            if (core->lastLogicError() != flint::Error::ok) {
+                std::cerr << "Lua application failed at frame " << i << '\n';
+                return 1;
+            }
         }
     }
-    std::vector<uint16_t> pixels(280 * 240);
-    FlintRender::Canvas canvas(pixels.data(), 280, 240);
-    FlintRender::resourceContext = &runtime.resources();
-    FlintRender::resourceGlyph = [](void *p, unsigned f, uint32_t cp) {
-        return static_cast<flint::ResourceManager *>(p)->glyph(f, cp);
-    };
-    FlintRender::resourceImage = [](void *p, FlintRender::Canvas &c, const FlintRender::Op &op) {
-        static_cast<flint::ResourceManager *>(p)->image(c, op);
-    };
-    FlintRender::render(scene, canvas);
+    if (core->scene(scene) != flint::Error::ok)
+        return 1;
+    std::vector<uint16_t> pixels(scene.width * scene.height);
+    FlintRender::Canvas canvas(pixels.data(), scene.width, scene.height);
+    core->paint(scene, canvas);
     std::ofstream image(argv[4], std::ios::binary);
-    image << "P6\n280 240\n255\n";
+    image << "P6\n" << scene.width << ' ' << scene.height << "\n255\n";
     for (auto pixel : pixels) {
         char rgb[3]{char(((pixel >> 11) & 31) * 255 / 31), char(((pixel >> 5) & 63) * 255 / 63),
             char((pixel & 31) * 255 / 31)};
@@ -60,6 +255,7 @@ int main(int argc, char **argv) {
     image.close();
     if (!image)
         return 1;
-    std::cout << "{\"frames\":" << frames << ",\"pixel_hash\":" << FlintRender::pixelHash(canvas)
-              << ",\"lua_peak_bytes\":" << runtime.logicPeak() << "}\n";
+    std::cout << "{\"frames\":" << (scenario ? steps : frames)
+              << ",\"pixel_hash\":" << FlintRender::pixelHash(canvas)
+              << ",\"lua_peak_bytes\":" << core->runtime().logicPeak() << "}\n";
 }

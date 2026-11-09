@@ -8,6 +8,8 @@ import struct
 from pathlib import Path
 
 REVISION = 0x20261105
+MAX_PACKAGE_BYTES = 1024 * 1024
+MAX_MANIFEST_BYTES = 4096
 TYPES = {
     "manifest": 1,
     "component": 2,
@@ -33,8 +35,10 @@ def build(sections):
             raise ValueError(
                 "unique positive IDs, known types and nonempty sections required"
             )
-        if offset + len(data) > 0xFFFFFFFF:
-            raise ValueError("package too large")
+        if kind == "manifest" and len(data) > MAX_MANIFEST_BYTES:
+            raise ValueError("manifest exceeds 4096 bytes")
+        if offset + len(data) > MAX_PACKAGE_BYTES:
+            raise ValueError("package exceeds 1 MiB")
         entries.extend(
             struct.pack("<IHHIIII", ident, TYPES[kind], 0, offset, len(data), 0, 0)
         )
