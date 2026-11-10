@@ -26,6 +26,9 @@ struct Platform {
     std::function<Error(std::string_view, AppReply &)> power;
     // Optional profiling clock in microseconds; independent of scheduling in milliseconds.
     std::function<uint64_t()> microseconds;
+    // Check is read-only; apply queues a hardware intent after durable settings commit.
+    std::function<Error(bool)> ble_check;
+    std::function<void(bool)> ble_apply;
     bool require_factory{};
 };
 struct Session {

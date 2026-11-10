@@ -451,6 +451,42 @@ int main(int argc, char **argv) {
     checkpoint.tick();
     CHECK(snapshot().at("epoch_durable_writes") == "3");
     CHECK(readText(epochPath) == std::to_string(1793740060));
+    // Radio policy is persistent, separate from Companion, and applied only after durable success.
+    Platform radioPlatform = platform;
+    radioPlatform.capabilities |= CapBlePolicy;
+    bool radioEnabled = false, rejectRadio = false;
+    unsigned radioChanges = 0;
+    radioPlatform.ble_check = [&](bool enabled) {
+        return enabled && rejectRadio ? Error::resource_exhausted : Error::ok;
+    };
+    radioPlatform.ble_apply = [&](bool enabled) {
+        radioEnabled = enabled;
+        ++radioChanges;
+    };
+    const auto radioRoot = root + "/radio-store";
+    Core radio(radioRoot, root + "/factory", radioPlatform);
+    CHECK(radio.begin() == Error::ok && radioEnabled && radioChanges == 1);
+    Session radioSession{true, true, 1001};
+    const auto setRadio = [&](std::string_view value) {
+        Writer setting;
+        setting.text("ble_enabled");
+        setting.text(value);
+        const auto reply =
+            radio.handle({Method::settings_set, 1, false, setting.data}, radioSession);
+        return Error(u16(reply.payload.data()));
+    };
+    CHECK(setRadio("false") == Error::invalid_argument && radioChanges == 1);
+    std::filesystem::create_directory(radioRoot + "/settings.bin.tmp");
+    CHECK(setRadio("0") == Error::io_error && radioEnabled && radioChanges == 1);
+    std::filesystem::remove(radioRoot + "/settings.bin.tmp");
+    CHECK(setRadio("0") == Error::ok && !radioEnabled && radioChanges == 2);
+    rejectRadio = true;
+    CHECK(setRadio("1") == Error::resource_exhausted && !radioEnabled && radioChanges == 2);
+    Core radioRestart(radioRoot, root + "/factory", radioPlatform);
+    CHECK(radioRestart.begin() == Error::ok && !radioEnabled && radioChanges == 3);
+    CHECK(radioRestart.runtime().manifest().id == "system.clock");
+    rejectRadio = false;
+    CHECK(setRadio("1") == Error::ok && radioEnabled);
     std::cout << "Core installation/resume/update/rollback, consent/revocation, factory "
                  "protection, external resources, lifecycle and binary framing: passed\n";
 }

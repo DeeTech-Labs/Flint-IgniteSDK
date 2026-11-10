@@ -196,6 +196,14 @@ Error Core::begin() {
     if (!settings_.contains("utc_offset")) {
         settings_["utc_offset"] = "180";
     }
+    if ((platform_.capabilities & CapBlePolicy) && platform_.ble_check && platform_.ble_apply) {
+        if (settings_["ble_enabled"] != "0")
+            settings_["ble_enabled"] = "1";
+        const bool enabled = settings_["ble_enabled"] != "0";
+        // A radio failure must not prevent autonomous local startup or USB recovery.
+        if (platform_.ble_check(enabled) == Error::ok)
+            platform_.ble_apply(enabled);
+    }
     auto epoch = readText(packages_.root() + "/epoch", 24);
     if (!epoch.empty()) {
         char *tail{};
@@ -1249,7 +1257,33 @@ Frame Core::handle(const Frame &request, Session &session) {
         }
         case Method::settings_set: {
             auto key = in.text(64), value = in.text(192);
-            if (!in.done() || key != "utc_offset") {
+            if (!in.done()) {
+                fail(Error::invalid_argument);
+                break;
+            }
+            if (key == "ble_enabled") {
+                if (!(platform_.capabilities & CapBlePolicy) || !platform_.ble_check ||
+                    !platform_.ble_apply) {
+                    fail(Error::not_supported);
+                    break;
+                }
+                if (value != "0" && value != "1") {
+                    fail(Error::invalid_argument);
+                    break;
+                }
+                error = platform_.ble_check(value == "1");
+                if (error != Error::ok)
+                    break;
+                const auto old = settings_;
+                settings_[key] = value;
+                error = persistSettings();
+                if (error != Error::ok)
+                    settings_ = old;
+                else
+                    platform_.ble_apply(value == "1");
+                break;
+            }
+            if (key != "utc_offset") {
                 fail(Error::invalid_argument);
                 break;
             }

@@ -57,3 +57,7 @@ Provider bindings have a 10-second lease from the last accepted sample, or from
 initial bind before the first sample. Expiration releases the binding, changes the
 generation and notifies remaining subscribers. Old-generation samples are rejected;
 an inactive provider cannot retain the source indefinitely.
+
+## BLE policy contract
+
+Capability `CapBlePolicy` (1024) enables the `ble_enabled` key in `settings_get/settings_set`: string `1` enables BLE availability and `0` disables it. An absent value defaults to `1` so migration preserves wireless access. This is a separate persistent policy, independent of Companion consent. The SDK validates the value and hardware admissibility, persists settings atomically, then submits the intent to the adapter. Adapter diagnostics expose actual state and startup errors; accepting a setting does not mean hardware transition completion. Disabling invalidates BLE sessions and queues while retaining bond keys. The current profile has no buttons/touch: re-enabling after `0` requires USB. FLCP and package ContractRevision remain unchanged.
