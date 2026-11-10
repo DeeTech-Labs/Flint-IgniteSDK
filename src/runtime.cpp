@@ -144,6 +144,7 @@ Error Runtime::launch(
         }
     }
     ++generation_;
+    ++consumerGeneration_;
     lifecycle_.dispatch(Lifecycle::create);
     return lifecycle_.dispatch(Lifecycle::activate);
 }
@@ -182,6 +183,7 @@ Error Runtime::stop() {
     file_.close();
     manifest_ = {};
     ++generation_;
+    ++consumerGeneration_;
     return Error::ok;
 }
 Error Runtime::suspend() {
@@ -197,6 +199,7 @@ Error Runtime::suspend() {
     }
     inputHead_ = inputSize_ = 0;
     lifecycle_.dispatch(Lifecycle::deactivate);
+    ++consumerGeneration_;
     return lifecycle_.dispatch(Lifecycle::suspend);
 }
 Error Runtime::resume() {
@@ -204,6 +207,7 @@ Error Runtime::resume() {
     if (error != Error::ok)
         return error;
     lifecycle_.dispatch(Lifecycle::activate);
+    ++consumerGeneration_;
     lua_.resumeClock(host_.monotonic ? host_.monotonic(host_.context) : 0);
     if (lua_.active() && (manifest_.capabilities & CapAppApi)) {
         error = lua_.event("resume", 0);

@@ -54,6 +54,7 @@ Core::Core(std::string root, std::string factory, Platform platform)
             return static_cast<Core *>(context)->appCall(service, key, value, reply);
         },
         [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); }, true});
+    runtime_.resources().profilingClock(platform_.microseconds);
 }
 Error Core::appCall(
     AppService service, std::string_view key, std::string_view value, AppReply &reply) {
@@ -113,8 +114,8 @@ uint64_t Core::nextWake() const {
         if (minuteDelay <= UINT64_MAX - at)
             next = std::min(next, at + minuteDelay);
     }
-    if (haveMetrics_ && metricAt_ <= UINT64_MAX - 10000)
-        next = std::min(next, metricAt_ + 10000);
+    if (companion_.valid && companion_.at <= UINT64_MAX - 10000)
+        next = std::min(next, companion_.at + 10000);
     return next;
 }
 Error Core::persistSettings() {
@@ -151,7 +152,7 @@ Error Core::revokePackage(std::string_view id) {
     if (result != Error::ok) {
         grants_ = previous;
     }
-    haveMetrics_ = false;
+    companion_.valid = false;
     return result;
 }
 void Core::refreshProviders(std::string_view id, bool removed) {
@@ -281,12 +282,12 @@ Error Core::launch(std::string_view id, std::string_view component) {
         }
     }
     if (result == Error::ok) {
-        haveMetrics_ = false;
+        companion_.valid = false;
         events_.post({3, 0, runtime_.generation()});
     }
     return result;
 }
-bool Core::canReceiveMetrics() {
+bool Core::canReceiveMetrics(uint64_t providerSession) {
     const auto &m = runtime_.manifest();
     bool declared = false;
     for (auto &d : m.permissions)
@@ -309,8 +310,8 @@ bool Core::canReceiveMetrics() {
     }
     if (!metricIdentityValid_ || runtime_.state() != State::active)
         return false;
-    Call call{metricPrincipal_, "cpu,ram", platform_.monotonic(), 0, 0, platform_.capabilities,
-        true, true, metricFactory_};
+    Call call{metricPrincipal_, "cpu,ram", platform_.monotonic(), providerSession, 0,
+        platform_.capabilities, true, true, metricFactory_};
     // Recheck live grants without allocating a temporary collection or caching a decision.
     const auto &spec = *permission("companion.pc.metrics");
     for (const auto &g : grants_) {
@@ -323,7 +324,151 @@ bool Core::canReceiveMetrics() {
     }
     return false;
 }
+void Core::refreshCompanionDemand() {
+    bool declared = false;
+    if (runtime_.state() == State::active)
+        for (const auto &permission : runtime_.manifest().permissions)
+            declared |=
+                permission.permission == "companion.pc.metrics" && permission.scope == "cpu,ram";
+    const auto state = !declared ? CompanionDemand::no_consumer
+        : canReceiveMetrics()    ? CompanionDemand::active
+                                 : CompanionDemand::permission_denied;
+    if (demandRuntime_ == runtime_.consumerGeneration() && demandCatalog_ == packages_.revision() &&
+        demand_ == state)
+        return;
+    demandRuntime_ = runtime_.consumerGeneration();
+    demandCatalog_ = packages_.revision();
+    demand_ = state;
+    ++demandGeneration_;
+    boundProvider_ = boundGeneration_ = 0;
+    sampleReceived_ = false;
+    if (companion_.valid) {
+        companion_.valid = false;
+        bindingsDirty_ = true;
+        events_.post({2, 0, runtime_.generation()});
+    }
+}
+uint64_t Core::companionNextWake(const Session &session) {
+    refreshCompanionDemand();
+    if (!session.id || !session.authenticated || !session.compatible)
+        return UINT64_MAX;
+    for (const auto &subscriber : companionSubscribers_)
+        if (subscriber.session == session.id && subscriber.sentGeneration != demandGeneration_)
+            return subscriber.sent && subscriber.sentAt <= UINT64_MAX - 100
+                ? subscriber.sentAt + 100
+                : platform_.monotonic();
+    return UINT64_MAX;
+}
+bool Core::takeCompanionEvent(const Session &session, Frame &event) {
+    refreshCompanionDemand();
+    if (!session.id || !session.authenticated || !session.compatible)
+        return false;
+    for (auto &subscriber : companionSubscribers_) {
+        if (subscriber.session != session.id || subscriber.sentGeneration == demandGeneration_)
+            continue;
+        const auto at = platform_.monotonic();
+        if (subscriber.sent && (at < subscriber.sentAt || at - subscriber.sentAt < 100))
+            return false;
+        Writer payload;
+        payload.n(CompanionDemandVersion, 2);
+        payload.n(1, 1);
+        payload.n(demandGeneration_, 8);
+        payload.n(uint8_t(demand_), 1);
+        payload.n(runtime_.consumerGeneration(), 8);
+        payload.n(CompanionSampleIntervalMs);
+        payload.n(CompanionTtlMs);
+        event = {Method::companion_state, 0, false, std::move(payload.data)};
+        subscriber.sent = true;
+        subscriber.sentGeneration = demandGeneration_;
+        subscriber.sentAt = at;
+        return true;
+    }
+    return false;
+}
+Error Core::handleCompanion(Method method, Reader &in, Session &session) {
+    if (!(platform_.capabilities & CapCompanionDemand))
+        return Error::not_supported;
+    if (!session.id)
+        return Error::permission_denied;
+    const auto version = in.n(2);
+    const auto kind = in.n(1);
+    if (!in.valid || version != CompanionDemandVersion)
+        return Error::invalid_argument;
+    auto subscriber = std::find_if(companionSubscribers_.begin(), companionSubscribers_.end(),
+        [&](const auto &item) { return item.session == session.id; });
+    if (method == Method::companion_subscribe) {
+        if (!in.done() || kind > 1)
+            return Error::invalid_argument;
+        if (!kind) {
+            if (subscriber != companionSubscribers_.end())
+                *subscriber = {};
+            if (boundProvider_ == session.id) {
+                boundProvider_ = boundGeneration_ = 0;
+                ++demandGeneration_;
+                sampleReceived_ = false;
+                if (companion_.providerSession == session.id) {
+                    companion_.valid = false;
+                    bindingsDirty_ = true;
+                    events_.post({2, 0, runtime_.generation()});
+                }
+            }
+            return Error::ok;
+        }
+        if (subscriber == companionSubscribers_.end())
+            subscriber = std::find_if(companionSubscribers_.begin(), companionSubscribers_.end(),
+                [](const auto &item) { return !item.session; });
+        if (subscriber == companionSubscribers_.end())
+            return Error::quota_exceeded;
+        *subscriber = {session.id, 0, 0, false};
+        return Error::ok;
+    }
+    const auto generation = in.n(8);
+    if (!in.valid || kind != 1 || (method == Method::companion_bind && !in.done()))
+        return Error::invalid_argument;
+    if (subscriber == companionSubscribers_.end())
+        return Error::permission_denied;
+    if (generation != demandGeneration_)
+        return Error::stale_handle;
+    if (demand_ != CompanionDemand::active || !canReceiveMetrics(session.id))
+        return Error::permission_denied;
+    if (boundProvider_ && boundProvider_ != session.id)
+        return Error::invalid_state;
+    if (method == Method::companion_bind) {
+        boundProvider_ = session.id;
+        boundGeneration_ = generation;
+        return Error::ok;
+    }
+    if (boundProvider_ != session.id || boundGeneration_ != generation)
+        return Error::invalid_state;
+    const auto at = platform_.monotonic();
+    if (sampleReceived_ && (at < sampleAt_ || at - sampleAt_ < 1000))
+        return Error::quota_exceeded;
+    const auto error = receiveMetrics(in, session);
+    if (error == Error::ok) {
+        sampleReceived_ = true;
+        sampleAt_ = at;
+    }
+    return error;
+}
+Error Core::receiveMetrics(Reader &in, const Session &session) {
+    if (boundProvider_ && boundProvider_ != session.id)
+        return Error::invalid_state;
+    if (!session.id || !canReceiveMetrics(session.id))
+        return Error::permission_denied;
+    const auto cpu = in.n(), ram = in.n();
+    if (!in.done() || cpu > 10000 || ram > 10000)
+        return Error::invalid_argument;
+    const auto at = platform_.monotonic();
+    if (sampleReceived_ && (at < sampleAt_ || at - sampleAt_ < 1000))
+        return Error::quota_exceeded;
+    companion_ = {cpu / 100.0, ram / 100.0, at, session.id, runtime_.consumerGeneration(), true};
+    boundProvider_ = session.id;
+    sampleReceived_ = true;
+    sampleAt_ = at;
+    return Error::ok;
+}
 bool Core::tick() {
+    refreshCompanionDemand();
     const auto at = platform_.monotonic();
     bool logicDirty = false;
     if (runtime_.scripted() && runtime_.state() == State::active && runtime_.nextWake() <= at) {
@@ -340,7 +485,10 @@ bool Core::tick() {
         std::copy(runtime_.manifest().id.begin(), runtime_.manifest().id.end(), packageId.begin());
         std::copy(
             runtime_.component().id.begin(), runtime_.component().id.end(), componentId.begin());
-        const auto logicError = runtime_.tick(at);
+        const auto logicError = [&] {
+            TimingScope timing(platform_.microseconds, logicTiming_);
+            return runtime_.tick(at);
+        }();
         if (logicError != Error::ok) {
             lastLogicError_ = logicError;
             lastDiagnostic_ = runtime_.diagnostic();
@@ -360,8 +508,11 @@ bool Core::tick() {
         renderedMinute_ = minute;
         events_.post({1, minute, runtime_.generation()});
     }
-    if (haveMetrics_ && platform_.monotonic() - metricAt_ >= 10000) {
-        haveMetrics_ = false;
+    if (companion_.valid &&
+        (companion_.consumerGeneration != runtime_.consumerGeneration() ||
+            !canReceiveMetrics(companion_.providerSession) ||
+            platform_.monotonic() - companion_.at >= 10000)) {
+        companion_.valid = false;
         events_.post({2, 0, runtime_.generation()});
     }
     bool dirty = logicDirty;
@@ -374,8 +525,10 @@ bool Core::tick() {
 }
 const Values &Core::bindings() {
     const auto minute = now() / 60;
-    const bool metrics =
-        haveMetrics_ && platform_.monotonic() - metricAt_ < 10000 && canReceiveMetrics();
+    const bool metrics = companion_.valid &&
+        companion_.consumerGeneration == runtime_.consumerGeneration() &&
+        platform_.monotonic() - companion_.at < 10000 &&
+        canReceiveMetrics(companion_.providerSession);
     if (!bindingsDirty_ && bindingsRuntime_ == runtime_.generation() && bindingsMinute_ == minute &&
         bindingsCatalog_ == packages_.revision() && bindingsMetrics_ == metrics)
         return bindings_;
@@ -431,7 +584,7 @@ const Values &Core::bindings() {
         values["packages.list"] = launcher_;
     if (metrics) {
         char b[48];
-        snprintf(b, sizeof(b), "CPU %.1f%%  RAM %.1f%%", cpu_, ram_);
+        snprintf(b, sizeof(b), "CPU %.1f%%  RAM %.1f%%", companion_.cpu, companion_.ram);
         values["companion.pc.metrics"] = b;
     }
     for (auto it = values.begin(); it != values.end();) {
@@ -452,6 +605,7 @@ const Values &Core::bindings() {
     return values;
 }
 Error Core::scene(FlintRender::Scene &scene) {
+    TimingScope timing(platform_.microseconds, sceneTiming_);
     if (now() && platform_.monotonic() - lastSave_ >= 60000) {
         auto text = std::to_string(now());
         writeAtomic(packages_.root() + "/epoch",
@@ -490,6 +644,7 @@ Error Core::scene(FlintRender::Scene &scene) {
     return Error::ok;
 }
 void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
+    TimingScope timing(platform_.microseconds, paintTiming_);
     FlintRender::resourceContext = &runtime_.resources();
     FlintRender::resourceMetrics = [](void *context, unsigned font, uint32_t cp) {
         return static_cast<ResourceManager *>(context)->metrics(font, cp);
@@ -512,11 +667,26 @@ void Core::disconnect(Session &session) {
         if (g.session == session.id && g.session)
             g.enabled = false;
     session.compatible = false;
-    haveMetrics_ = false;
-    events_.clear();
-    events_.post({4, 0, runtime_.generation()});
+    for (auto &subscriber : companionSubscribers_)
+        if (subscriber.session == session.id)
+            subscriber = {};
+    if (boundProvider_ == session.id) {
+        boundProvider_ = boundGeneration_ = 0;
+        ++demandGeneration_;
+        sampleReceived_ = false;
+    }
+    if (companion_.valid && companion_.providerSession == session.id) {
+        companion_.valid = false;
+        bindingsDirty_ = true;
+        events_.post({4, 0, runtime_.generation()});
+    }
 }
 Frame Core::handle(const Frame &request, Session &session) {
+    refreshCompanionDemand();
+    TimingScope timing(platform_.microseconds, requestTiming_);
+    ++requests_;
+    if (request.method == Method::metrics || request.method == Method::companion_sample)
+        ++metricRequests_;
     Frame reply{request.method, request.id, true, {}};
     Writer out;
     Reader in{request.payload};
@@ -548,6 +718,11 @@ Frame Core::handle(const Frame &request, Session &session) {
         fail(Error::incompatible_contract);
     else
         switch (request.method) {
+        case Method::companion_subscribe:
+        case Method::companion_bind:
+        case Method::companion_sample:
+            error = handleCompanion(request.method, in, session);
+            break;
         case Method::diagnostics: {
             if (!in.done()) {
                 fail(Error::invalid_argument);
@@ -557,6 +732,25 @@ Frame Core::handle(const Frame &request, Session &session) {
             values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
             values["lua_used_bytes"] = std::to_string(runtime_.logicUsed());
             values["lua_peak_bytes"] = std::to_string(runtime_.logicPeak());
+            values["requests"] = std::to_string(requests_);
+            values["request_errors"] = std::to_string(requestErrors_);
+            values["metrics_requests"] = std::to_string(metricRequests_);
+            values["event_queue_peak"] = std::to_string(events_.peak());
+            values["event_queue_overflows"] = std::to_string(events_.overflows());
+            const auto addTiming = [&](const char *name, const Timing &sample) {
+                values[std::string(name) + "_count"] = std::to_string(sample.count);
+                values[std::string(name) + "_total_us"] = std::to_string(sample.totalUs);
+                values[std::string(name) + "_max_us"] = std::to_string(sample.maxUs);
+            };
+            if (platform_.microseconds) {
+                addTiming("request", requestTiming_);
+                addTiming("logic", logicTiming_);
+                addTiming("scene", sceneTiming_);
+                addTiming("paint", paintTiming_);
+                addTiming("resource_read", runtime_.resources().readTiming());
+            }
+            values["resource_read_bytes"] = std::to_string(runtime_.resources().readBytes());
+            values["resource_read_errors"] = std::to_string(runtime_.resources().readErrors());
             const auto &diagnostic =
                 lastLogicError_ != Error::ok ? lastDiagnostic_ : runtime_.diagnostic();
             if (diagnostic.error != Error::ok || diagnostic.logCount) {
@@ -571,11 +765,32 @@ Frame Core::handle(const Frame &request, Session &session) {
                 for (size_t i = 0; i < diagnostic.logCount; ++i)
                     values["logic_log_" + std::to_string(i)] = diagnostic.log[i].data();
             }
-            out.n(values.size(), 2);
-            for (const auto &[key, value] : values) {
-                out.text(key);
-                out.text(value);
-            }
+            // Fault details must remain readable even with many adapter counters.
+            // This map is extensible; report truncation instead of losing the whole reply.
+            constexpr std::string_view truncatedKey = "diagnostics_truncated";
+            constexpr size_t limit = MaxPayload - 4 - 4 - truncatedKey.size() - 1;
+            Writer rows;
+            uint16_t count = 0;
+            bool truncated = false;
+            for (int pass = 0; pass < 2; ++pass)
+                for (const auto &[key, value] : values) {
+                    const bool fault = key.starts_with("logic_") || key == "last_logic_error";
+                    if (fault != (pass == 0) || key == truncatedKey)
+                        continue;
+                    const auto size = key.size() + value.size() + 4;
+                    if (count == 127 || key.size() > 80 || value.size() > 192 ||
+                        size > limit - rows.data.size()) {
+                        truncated = true;
+                        continue;
+                    }
+                    rows.text(key);
+                    rows.text(value);
+                    ++count;
+                }
+            out.n(count + 1, 2);
+            out.raw(rows.data);
+            out.text(truncatedKey);
+            out.text(truncated ? "1" : "0");
             break;
         }
         case Method::info: {
@@ -972,28 +1187,11 @@ Frame Core::handle(const Frame &request, Session &session) {
             error = persistGrants();
             if (error != Error::ok)
                 grants_ = std::move(old);
-            if (!enabled) {
-                haveMetrics_ = false;
-                events_.clear();
-            }
             break;
         }
-        case Method::metrics: {
-            if (!canReceiveMetrics()) {
-                fail(Error::permission_denied);
-                break;
-            }
-            auto cpu = in.n(), ram = in.n();
-            if (!in.done() || cpu > 10000 || ram > 10000) {
-                fail(Error::invalid_argument);
-                break;
-            }
-            cpu_ = cpu / 100.0;
-            ram_ = ram / 100.0;
-            metricAt_ = platform_.monotonic();
-            haveMetrics_ = true;
+        case Method::metrics:
+            error = boundGeneration_ ? Error::invalid_state : receiveMetrics(in, session);
             break;
-        }
         case Method::pairing: {
             auto action = in.text(64);
             if (!in.done()) {
@@ -1079,8 +1277,9 @@ Frame Core::handle(const Frame &request, Session &session) {
     if (error == Error::ok && request.method != Method::scene && request.method != Method::info &&
         request.method != Method::packages && request.method != Method::package_read &&
         request.method != Method::permissions_get && request.method != Method::settings_get &&
-        request.method != Method::hello && request.method != Method::install_chunk &&
-        request.method != Method::install_begin) {
+        request.method != Method::diagnostics && request.method != Method::companion_subscribe &&
+        request.method != Method::companion_bind && request.method != Method::hello &&
+        request.method != Method::install_chunk && request.method != Method::install_begin) {
         bindingsDirty_ = true;
         events_.post({4, 0, runtime_.generation()});
     }
@@ -1089,10 +1288,14 @@ Frame Core::handle(const Frame &request, Session &session) {
     if (error == Error::ok)
         result.raw(out.data);
     if (result.data.size() > MaxPayload) {
+        error = Error::quota_exceeded;
         result.data.clear();
         result.n(uint16_t(Error::quota_exceeded), 2);
     }
     reply.payload = std::move(result.data);
+    if (error != Error::ok)
+        ++requestErrors_;
+    refreshCompanionDemand();
     return reply;
 }
 } // namespace flint

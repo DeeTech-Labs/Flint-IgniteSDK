@@ -110,3 +110,19 @@ See [licensing scope](LICENSING.md). Russian is canonical; this is the English t
 ## Application API 1
 
 This additive Lua extension requires capability 128; binary formats, protocol identifiers and ContractRevision are unchanged. Runtime owns the input queue (16), timers (8), bounded string values and diagnostics. Core implements authorized read-only services and private package storage (16 keys, 4096 bytes, atomic replacement, CRC-32, one successful write per second per Core). Callbacks in a tick share the instruction budget; service calls are capped at 32. Adapters use postInput and nextWake; hardware integration remains in consumers. C++ class sizes changed and require rebuilding consumers. Additional fixed structures and storage temporaries do not expand the Lua heap: the existing 16 KiB deduction is unchanged, but total native peaks/stack need new device measurements. See [SDK.md](SDK.md#application-api-1-input-state-and-services) for the full contract and limits. The simulator executes the same Core/Runtime with virtual-time scenarios.
+
+
+## Companion Demand and diagnostics
+
+[Companion Demand v1](COMPANION.md) separates Device Control and session-bound data
+providers within one Core. Disconnecting another client does not clear metrics or
+local runtime events. Consumer generations also change on suspend/resume while
+input handle generations retain their existing contract.
+
+Optional `Platform::microseconds` enables cumulative count/total/max timings for
+requests, logic ticks, scenes, paint and resource reads. Resource reads/errors and
+EventBus overflows are counted without extra tasks or queues. Phases may be nested.
+Diagnostics do not dirty the scene. Replies fit MaxPayload and 128 fields, prioritize
+Lua fault details, and mark omitted optional fields with `diagnostics_truncated=1`.
+Python clients accept numeric and textual values. C++ class sizes changed: rebuild
+SDK and consumers together. Wire/package ContractRevision remains unchanged.

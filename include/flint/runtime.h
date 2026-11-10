@@ -12,13 +12,18 @@ struct Event {
 class EventBus {
     std::array<Event, 32> queue_{};
     size_t head_{}, size_{};
+    size_t peak_{};
+    uint64_t overflows_{};
 
 public:
     Error post(Event e) {
-        if (size_ == queue_.size())
+        if (size_ == queue_.size()) {
+            ++overflows_;
             return Error::quota_exceeded;
+        }
         queue_[(head_ + size_) % queue_.size()] = e;
         ++size_;
+        peak_ = std::max(peak_, size_);
         return Error::ok;
     }
     bool poll(Event &e) {
@@ -31,6 +36,12 @@ public:
     }
     bool empty() const {
         return !size_;
+    }
+    size_t peak() const {
+        return peak_;
+    }
+    uint64_t overflows() const {
+        return overflows_;
     }
     void clear() {
         head_ = size_ = 0;
@@ -47,6 +58,7 @@ class Runtime {
     ResourceManager resources_;
     LuaApp lua_;
     uint64_t generation_{};
+    uint64_t consumerGeneration_{};
     AppHost host_{};
     uint64_t capabilities_{};
     bool loading_{}, focused_{true}, tickChanged_{}, pendingVisual_{};
@@ -106,6 +118,10 @@ public:
     }
     uint64_t generation() const {
         return generation_;
+    }
+    // Provider data also expires across suspend/resume; input handles retain their contract.
+    uint64_t consumerGeneration() const {
+        return consumerGeneration_;
     }
     ResourceManager &resources() {
         return resources_;

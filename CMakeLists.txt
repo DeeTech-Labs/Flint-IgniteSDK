@@ -43,6 +43,8 @@ option(FLINT_PLATFORM_TESTS "Build local platform tests" ON)
 if(FLINT_PLATFORM_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME companion_client COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_companion.py)
     add_test(NAME registry_validation COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_registry.py)
     add_executable(resource_tests tests/resources.cpp)

@@ -1,4 +1,5 @@
 #pragma once
+#include "diagnostics.h"
 #include "protocol.h"
 #include "runtime.h"
 namespace flint {
@@ -12,14 +13,16 @@ inline constexpr uint64_t HostLogicCapabilities = 0;
 struct Platform {
     std::string build_id;
     MemoryBudget memory{48 * 1024, 0, 4096};
-    uint64_t capabilities{
-        CapDeclarative | CapResources | CapPackages | CapMetrics | HostLogicCapabilities};
+    uint64_t capabilities{CapDeclarative | CapResources | CapPackages | CapMetrics |
+        HostLogicCapabilities | CapCompanionDemand};
     std::function<uint64_t()> monotonic;
     std::function<uint64_t()> free_storage;
     std::function<Values()> diagnostics;
     std::function<Bytes(std::string_view)> pairing;
     // Read-only power fields supplied by the device adapter; absent means unsupported.
     std::function<Error(std::string_view, AppReply &)> power;
+    // Optional profiling clock in microseconds; independent of scheduling in milliseconds.
+    std::function<uint64_t()> microseconds;
 };
 struct Session {
     bool authenticated{}, compatible{};
@@ -38,9 +41,22 @@ class Core {
     EventBus events_;
     std::vector<PermissionRecord> grants_;
     uint64_t epoch_{}, base_{}, lastSave_{};
-    double cpu_{}, ram_{};
-    uint64_t metricAt_{};
-    bool haveMetrics_{};
+    struct CompanionState {
+        double cpu{}, ram{};
+        uint64_t at{}, providerSession{}, consumerGeneration{};
+        bool valid{};
+    } companion_;
+    struct CompanionSubscriber {
+        uint64_t session{}, sentGeneration{}, sentAt{};
+        bool sent{};
+    };
+    std::array<CompanionSubscriber, 4> companionSubscribers_{};
+    uint64_t demandGeneration_{1}, demandRuntime_{~uint64_t(0)}, demandCatalog_{~uint64_t(0)},
+        boundProvider_{}, boundGeneration_{}, sampleAt_{};
+    CompanionDemand demand_{CompanionDemand::no_consumer};
+    bool sampleReceived_{};
+    void refreshCompanionDemand();
+    Error handleCompanion(Method method, Reader &input, Session &session);
     Error lastLogicError_{Error::ok};
     LuaDiagnostic lastDiagnostic_{};
     std::string lastLogicPackage_, lastLogicComponent_;
@@ -59,11 +75,14 @@ class Core {
     bool metricIdentityValid_{}, metricFactory_{};
     std::string launcher_;
     uint64_t launcherCatalog_{~uint64_t(0)};
-    bool canReceiveMetrics();
+    bool canReceiveMetrics(uint64_t providerSession = 0);
+    Error receiveMetrics(Reader &input, const Session &session);
     Values bindings_;
     uint64_t bindingsRuntime_{~uint64_t(0)}, bindingsMinute_{~uint64_t(0)},
         bindingsCatalog_{~uint64_t(0)};
     bool bindingsDirty_{true}, bindingsMetrics_{};
+    Timing requestTiming_, logicTiming_, sceneTiming_, paintTiming_;
+    uint64_t requests_{}, requestErrors_{}, metricRequests_{};
     const Values &bindings();
 
 public:
@@ -74,6 +93,8 @@ public:
     Error scene(FlintRender::Scene &scene);
     void paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas);
     void disconnect(Session &session);
+    bool takeCompanionEvent(const Session &session, Frame &event);
+    uint64_t companionNextWake(const Session &session);
     PackageManager &packages() {
         return packages_;
     }

@@ -24,7 +24,11 @@ enum class Method : uint16_t {
     rollback,
     recover,
     package_read,
-    diagnostics
+    diagnostics,
+    companion_subscribe = 22,
+    companion_bind = 23,
+    companion_sample = 24,
+    companion_state = 25
 };
 struct Frame {
     Method method{};
@@ -32,6 +36,9 @@ struct Frame {
     bool reply{};
     Bytes payload;
 };
+inline bool isCompanionEvent(const Frame &frame) {
+    return !frame.reply && !frame.id && frame.method == Method::companion_state;
+}
 inline Bytes encodeFrame(const Frame &frame) {
     if (frame.payload.size() > MaxPayload)
         return {};

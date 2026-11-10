@@ -50,6 +50,14 @@ int main(int argc, char **argv) {
     Platform platform;
     platform.build_id = "host-tests";
     platform.monotonic = [&] { return tick; };
+    uint64_t profileClock = 0;
+    platform.microseconds = [&] { return profileClock += 10; };
+    platform.diagnostics = [] {
+        Values values;
+        for (unsigned i = 0; i < 128; ++i)
+            values["zz_adapter_" + std::to_string(i)] = std::string(192, 'x');
+        return values;
+    };
     platform.free_storage = [] { return uint64_t(2 * 1024 * 1024); };
     platform.capabilities |= CapResources;
     Core core(root + "/store", root + "/factory", platform);
@@ -80,6 +88,7 @@ int main(int argc, char **argv) {
     session.authenticated = false;
     CHECK(request(Method::info) == Error::permission_denied);
     CHECK(request(Method::diagnostics) == Error::permission_denied);
+    CHECK(request(Method::companion_subscribe) == Error::permission_denied);
     session.authenticated = true;
     Bytes info;
     CHECK(request(Method::info, {}, &info) == Error::ok);
@@ -120,7 +129,7 @@ int main(int argc, char **argv) {
     CHECK(core.tick());
     CHECK(!core.tick());
     core.disconnect(session);
-    CHECK(core.tick());
+    CHECK(!core.tick()); // A control-only disconnect does not dirty the local runtime.
     session = {true, false, 8};
     CHECK(hello(ContractRevision) == Error::ok);
     CHECK(begin(v1) == 100);
@@ -149,6 +158,70 @@ int main(int argc, char **argv) {
     CHECK(request(Method::metrics, metrics.data) == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
+    // Demand snapshots are unsolicited, bounded and coalesced across lifecycle changes.
+    Writer subscribe;
+    subscribe.n(CompanionDemandVersion, 2);
+    subscribe.n(1, 1);
+    CHECK(request(Method::companion_subscribe, subscribe.data) == Error::ok);
+    CHECK(request(Method::companion_subscribe, subscribe.data) == Error::ok);
+    Frame event;
+    CHECK(core.takeCompanionEvent(session, event));
+    CHECK(isCompanionEvent(event) && event.payload.size() <= 64);
+    Reader demandReader{event.payload};
+    CHECK(demandReader.n(2) == CompanionDemandVersion && demandReader.n(1) == 1);
+    const auto demandGeneration = demandReader.n(8);
+    CHECK(demandReader.n(1) == uint8_t(CompanionDemand::active));
+    CHECK(!core.takeCompanionEvent(session, event));
+    Writer binding;
+    binding.n(CompanionDemandVersion, 2);
+    binding.n(1, 1);
+    binding.n(demandGeneration, 8);
+    CHECK(request(Method::companion_bind, binding.data) == Error::ok);
+    Writer sample;
+    sample.raw(binding.data);
+    sample.raw(metrics.data);
+    tick += 1000;
+    CHECK(request(Method::companion_sample, sample.data) == Error::ok);
+    CHECK(request(Method::companion_sample, sample.data) == Error::quota_exceeded);
+    Session outsider{true, true, 111};
+    auto denied = core.handle({Method::companion_sample, 1, false, sample.data}, outsider);
+    CHECK(u16(denied.payload.data()) == uint16_t(Error::permission_denied));
+    for (uint64_t id = 20; id < 24; ++id) {
+        Session peer{true, true, id};
+        auto result = core.handle({Method::companion_subscribe, 1, false, subscribe.data}, peer);
+        CHECK(u16(result.payload.data()) == uint16_t(id == 23 ? Error::quota_exceeded : Error::ok));
+    }
+    for (uint64_t id = 20; id < 24; ++id) {
+        Session peer{true, true, id};
+        core.disconnect(peer);
+    }
+    // Device Control sessions do not own another session's provider data/events.
+    Session control{true, true, 99};
+    core.disconnect(control);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
+    CHECK(core.runtime().suspend() == Error::ok);
+    CHECK(core.runtime().resume() == Error::ok);
+    auto stale = request(Method::companion_sample, sample.data);
+    CHECK(stale == Error::stale_handle);
+    tick += 100;
+    CHECK(core.takeCompanionEvent(session, event));
+    CHECK(!core.takeCompanionEvent(session, event));
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU") == std::string::npos);
+    CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    tick += 10000;
+    core.tick();
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU") == std::string::npos);
+    CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    core.disconnect(session);
+    CHECK(core.runtime().state() == State::active);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU") == std::string::npos);
+    CHECK(hello(ContractRevision) == Error::ok);
+    CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    CHECK(core.scene(scene) == Error::ok);
     allocations = 0;
     trackAllocations = true;
     for (unsigned frame = 0; frame < 10; ++frame)
@@ -277,6 +350,25 @@ int main(int argc, char **argv) {
         CHECK(e.type == unsigned(i));
     }
     CHECK(!bus.poll(e));
+    CHECK(bus.peak() == 32 && bus.overflows() == 1);
+    bus.clear();
+    CHECK(bus.empty() && bus.peak() == 32 && bus.overflows() == 1);
+    Bytes diagnosticBytes;
+    CHECK(request(Method::diagnostics, {}, &diagnosticBytes) == Error::ok);
+    Reader diagnosticReader{diagnosticBytes};
+    Values counters;
+    const auto diagnosticCount = diagnosticReader.n(2);
+    for (unsigned i = 0; i < diagnosticCount; ++i) {
+        const auto key = diagnosticReader.text(80);
+        counters[key] = diagnosticReader.text(192);
+    }
+    CHECK(diagnosticReader.done());
+    CHECK(diagnosticBytes.size() + 2 <= MaxPayload);
+    CHECK(counters.at("diagnostics_truncated") == "1");
+    CHECK(std::stoull(counters.at("request_count")) > 0);
+    CHECK(std::stoull(counters.at("request_max_us")) >= 10);
+    CHECK(std::stoull(counters.at("resource_read_bytes")) >= header.size());
+    CHECK(std::stoull(counters.at("resource_read_errors")) > 0);
     std::cout << "Core installation/resume/update/rollback, consent/revocation, factory "
                  "protection, external resources, lifecycle and binary framing: passed\n";
 }
