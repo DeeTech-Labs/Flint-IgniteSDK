@@ -1,5 +1,6 @@
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <flint/core.h>
 #include <flint/os.h>
@@ -617,9 +618,10 @@ const Values &Core::bindings() {
     time_t local = epoch + offset * 60;
     struct tm tm{};
     gmtime_r(&local, &tm);
-    char time[32], date[32];
-    strftime(time, sizeof(time), "%H:%M", &tm);
-    strftime(date, sizeof(date), "%d.%m.%Y", &tm);
+    char time[32], date[40];
+    std::snprintf(time, sizeof(time), "%02d:%02d", tm.tm_hour, tm.tm_min);
+    std::snprintf(
+        date, sizeof(date), "%02d.%02d.%04d", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900);
     values["time.read"] = epoch ? time : "--:--";
     values["time.date"] = epoch ? date : "Sync time in Flare";
     values["system.info"] = std::string(DeviceProfile);

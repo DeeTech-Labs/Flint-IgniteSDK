@@ -511,6 +511,33 @@ int main(int argc, char **argv) {
     CHECK(radioRestart.runtime().manifest().id == "system.clock");
     rejectRadio = false;
     CHECK(setRadio("1") == Error::ok && radioEnabled);
+    // Fixed numeric formatting preserves UTC offsets and calendar transitions.
+    Core calendar(root + "/calendar-store", root + "/factory", platform);
+    CHECK(calendar.begin() == Error::ok);
+    Session calendarSession{true, true, 1002};
+    struct CalendarCase {
+        uint64_t epoch;
+        const char *offset, *time, *date;
+    };
+    for (const auto &test : {CalendarCase{1700000000, "0", "22:13", "14.11.2023"},
+             CalendarCase{1700000000, "840", "12:13", "15.11.2023"},
+             CalendarCase{1700000000, "-720", "10:13", "14.11.2023"},
+             CalendarCase{1709251140, "0", "23:59", "29.02.2024"},
+             CalendarCase{1709251140, "60", "00:59", "01.03.2024"},
+             CalendarCase{1735689540, "60", "00:59", "01.01.2025"}}) {
+        Writer offset;
+        offset.text("utc_offset");
+        offset.text(test.offset);
+        CHECK(u16(calendar.handle({Method::settings_set, 1, false, offset.data}, calendarSession)
+                      .payload.data()) == 0);
+        Writer value;
+        value.n(test.epoch, 8);
+        CHECK(u16(calendar.handle({Method::time_set, 2, false, value.data}, calendarSession)
+                      .payload.data()) == 0);
+        CHECK(calendar.scene(scene) == Error::ok);
+        CHECK(text(scene).find(test.time) != std::string::npos &&
+            text(scene).find(test.date) != std::string::npos);
+    }
     std::cout << "Core installation/resume/update/rollback, consent/revocation, factory "
                  "protection, external resources, lifecycle and binary framing: passed\n";
 }
