@@ -442,6 +442,11 @@ struct PreparedInstall::Impl {
         current_open,
         current_package,
         current_application,
+        collect_open,
+        collect_next,
+        collect_refs_open,
+        collect_ref,
+        collect_remove,
         ready
     };
     PackageManager *owner{};
@@ -454,7 +459,9 @@ struct PreparedInstall::Impl {
     Manifest candidateManifest, auxiliaryManifest;
     PackageValidation candidateValidation, auxiliaryValidation;
     ApplicationValidation candidateApplication, auxiliaryApplication;
-    DirectoryCursor directory;
+    DirectoryCursor directory, references;
+    std::string garbage;
+    unsigned publication{};
     uint32_t total{};
     Phase phase{Phase::candidate_package};
     Error error{Error::ok};
@@ -471,6 +478,9 @@ PreparedInstall::PreparedInstall(std::unique_ptr<Impl> impl) : impl_(std::move(i
 PreparedInstall::~PreparedInstall() = default;
 bool PreparedInstall::ready() const {
     return !impl_->consumed && impl_->error == Error::ok && impl_->phase == Impl::Phase::ready;
+}
+bool PreparedInstall::publishing() const {
+    return impl_->publication != 0;
 }
 bool PreparedInstall::committed() const {
     return impl_->committed && !impl_->consumed;
@@ -561,7 +571,7 @@ Error PreparedInstall::advance(uint32_t budget) {
         // catalog must not make protected identities available for replacement.
         if (error != Error::ok && !factory) {
             state.clearAuxiliary();
-            state.phase = Phase::ready;
+            state.phase = Phase::collect_open;
             error = Error::ok;
         }
         break;
@@ -572,7 +582,7 @@ Error PreparedInstall::advance(uint32_t budget) {
         error = state.auxiliaryApplication.advance(budget);
         if (error != Error::ok && !factory) {
             state.clearAuxiliary();
-            state.phase = Phase::ready;
+            state.phase = Phase::collect_open;
             error = Error::ok;
         } else if (error == Error::ok && state.auxiliaryApplication.done()) {
             const auto &candidate = state.candidateManifest;
@@ -588,7 +598,7 @@ Error PreparedInstall::advance(uint32_t budget) {
                     if (candidate.version <= current.version)
                         return state.error = Error::incompatible_contract;
                 }
-                state.phase = Phase::ready;
+                state.phase = Phase::collect_open;
             }
             state.clearAuxiliary();
         }
@@ -598,19 +608,76 @@ Error PreparedInstall::advance(uint32_t budget) {
         state.previousRef = readText(state.root + "/" + state.candidateManifest.id + ".ref");
         if (!objectName(state.previousRef) ||
             !state.auxiliaryFile.open(state.root + "/" + state.previousRef)) {
-            state.phase = Phase::ready;
+            state.phase = Phase::collect_open;
         } else {
             error = state.auxiliaryValidation.begin(
                 state.auxiliaryPackage, state.auxiliaryFile.source());
             state.phase = Phase::current_package;
             if (error != Error::ok) {
                 state.clearAuxiliary();
-                state.phase = Phase::ready;
+                state.phase = Phase::collect_open;
                 error = Error::ok;
             }
         }
         break;
     }
+    case Phase::collect_open:
+        error = state.directory.open(state.root);
+        state.phase = Phase::collect_next;
+        break;
+    case Phase::collect_next: {
+        bool present = false;
+        error = state.directory.next(state.garbage, present);
+        if (error == Error::ok && !present) {
+            state.directory.close();
+            state.phase = Phase::ready;
+        } else if (error == Error::ok && objectName(state.garbage))
+            state.phase = Phase::collect_refs_open;
+        break;
+    }
+    case Phase::collect_refs_open:
+        error = state.references.open(state.root);
+        state.phase = Phase::collect_ref;
+        break;
+    case Phase::collect_ref: {
+        std::string name;
+        bool present = false;
+        error = state.references.next(name, present);
+        if (error != Error::ok)
+            break;
+        if (!present) {
+            state.references.close();
+            state.phase = Phase::collect_remove;
+        } else if (name.ends_with(".ref")) {
+            // Read at most two tiny references per step, never a catalog-sized set.
+            for (const auto suffix : {"", ".previous"}) {
+                const auto path = state.root + "/" + name + suffix;
+                FILE *reference = fopen(path.c_str(), "rb");
+                if (!reference) {
+                    if (errno != ENOENT)
+                        return state.error = Error::io_error;
+                    continue;
+                }
+                std::array<char, 71> bytes{};
+                const auto count = fread(bytes.data(), 1, bytes.size(), reference);
+                const bool failed = ferror(reference);
+                const auto closed = fclose(reference);
+                if (failed || closed)
+                    return state.error = Error::io_error;
+                if (std::string_view(bytes.data(), count) == state.garbage) {
+                    state.references.close();
+                    state.phase = Phase::collect_next;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    case Phase::collect_remove:
+        if (unlink((state.root + "/" + state.garbage).c_str()) && errno != ENOENT)
+            error = Error::io_error;
+        state.phase = Phase::collect_next;
+        break;
     case Phase::ready:
         break;
     }
@@ -651,44 +718,59 @@ Error PackageManager::prepareCommit(std::unique_ptr<PreparedInstall> &prepared,
     prepared = std::move(result);
     return Error::ok;
 }
-Error PackageManager::commit(PreparedInstall &prepared, std::string &id) {
+Error PackageManager::advanceCommit(PreparedInstall &prepared, std::string &id, bool &completed) {
+    completed = false;
     auto &state = *prepared.impl_;
     if (state.owner != this || !prepared.ready() || state.committed)
         return Error::invalid_state;
     if (state.revision != revision_)
         return Error::stale_handle;
-    File currentStaging;
-    if (!state.candidateFile.unchanged() || !currentStaging.open(staging()) ||
-        !state.candidateFile.sameObject(currentStaging))
-        return Error::stale_handle;
-    currentStaging.close();
-    const auto &manifest = state.candidateManifest;
-    const auto ref = root_ + "/" + manifest.id + ".ref";
-    if (readText(ref) != state.previousRef)
-        return Error::stale_handle;
+    const auto ref = root_ + "/" + state.candidateManifest.id + ".ref";
     const auto object = hexDigest(state.candidatePackage.digest()) + ".ignit";
-    if (!state.previousRef.empty() &&
-        !writeAtomic(ref + ".previous",
-            {reinterpret_cast<const uint8_t *>(state.previousRef.data()),
-                state.previousRef.size()}))
-        return Error::io_error;
     const auto objectPath = root_ + "/" + object;
-    if (!renameOpenFiles_)
-        state.candidateFile.close();
-    if (replaceFile(staging().c_str(), objectPath.c_str()))
-        return state.error = Error::io_error;
-    if (!renameOpenFiles_) {
-        if (!state.candidateFile.reopenMoved(objectPath))
-            return state.error = Error::io_error;
-        // Package source still points to the same File; reopen validated its original size.
+    switch (state.publication) {
+    case 0: {
+        File currentStaging;
+        if (!state.candidateFile.unchanged() || !currentStaging.open(staging()) ||
+            !state.candidateFile.sameObject(currentStaging) || readText(ref) != state.previousRef)
+            return state.error = Error::stale_handle;
+        break;
     }
-    if (!writeAtomic(ref, {reinterpret_cast<const uint8_t *>(object.data()), object.size()}))
-        return Error::io_error;
-    ++revision_;
-    state.committed = true;
-    collectObjects(root_);
-    id = manifest.id;
+    case 1:
+        if (!state.previousRef.empty() &&
+            !writeAtomic(ref + ".previous",
+                {reinterpret_cast<const uint8_t *>(state.previousRef.data()),
+                    state.previousRef.size()}))
+            return state.error = Error::io_error;
+        break;
+    case 2:
+        if (!renameOpenFiles_)
+            state.candidateFile.close();
+        if (replaceFile(staging().c_str(), objectPath.c_str()))
+            return state.error = Error::io_error;
+        if (!renameOpenFiles_ && !state.candidateFile.reopenMoved(objectPath))
+            return state.error = Error::io_error;
+        break;
+    case 3:
+        if (!writeAtomic(ref, {reinterpret_cast<const uint8_t *>(object.data()), object.size()}))
+            return state.error = Error::io_error;
+        ++revision_;
+        state.committed = true;
+        id = state.candidateManifest.id;
+        completed = true;
+        break;
+    default:
+        return Error::invalid_state;
+    }
+    ++state.publication;
     return Error::ok;
+}
+Error PackageManager::commit(PreparedInstall &prepared, std::string &id) {
+    bool completed = false;
+    auto error = Error::ok;
+    while (!completed && error == Error::ok)
+        error = advanceCommit(prepared, id, completed);
+    return error;
 }
 Error PackageManager::commit(const std::string &staging, std::string &id) {
     if (staging != this->staging())

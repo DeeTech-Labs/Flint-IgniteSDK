@@ -96,9 +96,10 @@ class Core {
     uint64_t requests_{}, requestErrors_{}, metricRequests_{};
     std::unique_ptr<PreparedInstall> install_;
     Frame installRequest_;
+    bool installPermissionsRevoked_{};
     std::optional<Frame> installReply_;
     uint64_t installOwner_{}, installSteps_{};
-    Timing installTiming_;
+    Timing installTiming_, installPublishTiming_;
     Error beginInstall(const Frame &request, const Session &session);
     void advanceInstall();
     const Values &bindings();

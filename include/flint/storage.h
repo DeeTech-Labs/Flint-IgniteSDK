@@ -61,6 +61,8 @@ public:
     ~PreparedInstall();
     Error advance(uint32_t byteBudget);
     bool ready() const;
+    // Once publication starts, finish it even if the initiating session disconnects.
+    bool publishing() const;
     uint32_t verifiedBytes() const;
     uint32_t size() const;
     const Manifest &manifest() const;
@@ -96,6 +98,8 @@ public:
     Error prepareCommit(std::unique_ptr<PreparedInstall> &prepared,
         std::string_view transferHash = {}, uint32_t expectedSize = 0);
     Error commit(PreparedInstall &prepared, std::string &installedId);
+    // One publication stage per call; completed becomes true only after atomic activation.
+    Error advanceCommit(PreparedInstall &prepared, std::string &installedId, bool &completed);
     Error remove(std::string_view id);
     Error rollback(std::string_view id);
     std::string staging() const {

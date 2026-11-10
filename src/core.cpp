@@ -149,12 +149,14 @@ Error Core::persistGrants() {
 }
 Error Core::revokePackage(std::string_view id) {
     const auto previous = grants_;
+    bool changed = false;
     for (auto &grant : grants_) {
-        if (grant.package == id) {
+        if (grant.package == id && grant.enabled) {
             grant.enabled = false;
+            changed = true;
         }
     }
-    const auto result = persistGrants();
+    const auto result = changed ? persistGrants() : Error::ok;
     if (result != Error::ok) {
         grants_ = previous;
     }
@@ -532,7 +534,9 @@ void Core::checkpointEpoch() {
     nextEpochSave_ = epochFailures_ >= 3 || at > UINT64_MAX - delay ? UINT64_MAX : at + delay;
 }
 bool Core::tick() {
-    checkpointEpoch();
+    // Do not stack an unrelated durable checkpoint on an installation I/O step.
+    if (!install_)
+        checkpointEpoch();
     advanceInstall();
     refreshCompanionDemand();
     const auto at = platform_.monotonic();
@@ -725,7 +729,9 @@ void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
 }
 void Core::disconnect(Session &session) {
     if (installOwner_ == session.id) {
-        install_.reset();
+        // Publication owns durable changes; a lost transport only discards its reply.
+        if (!install_ || !install_->publishing())
+            install_.reset();
         installReply_.reset();
         installOwner_ = 0;
     }
@@ -772,6 +778,7 @@ Error Core::beginInstall(const Frame &request, const Session &session) {
         packages_.prepareCommit(install_, std::string_view(meta).substr(separator + 1), total);
     if (error != Error::ok)
         return error;
+    installPermissionsRevoked_ = false;
     installOwner_ = session.id;
     installRequest_ = {request.method, request.id, false, {}};
     return Error::ok;
@@ -781,28 +788,36 @@ void Core::advanceInstall() {
         return;
     TimingScope timing(platform_.microseconds, installTiming_);
     ++installSteps_;
-    auto error = install_->advance(4096);
+    auto error = install_->ready() ? Error::ok : install_->advance(4096);
     if (error == Error::ok && !install_->ready())
         return;
     std::string installedId;
     if (error == Error::ok) {
         const auto candidateId = install_->manifest().id;
-        error = revokePackage(candidateId);
+        if (!installPermissionsRevoked_) {
+            error = revokePackage(candidateId);
+            if (error == Error::ok) {
+                installPermissionsRevoked_ = true;
+                return;
+            }
+        }
         if (error == Error::ok) {
             const bool active = runtime_.manifest().id == candidateId;
             const auto component = runtime_.component().id;
-            if (active)
-                runtime_.stop();
-            error = packages_.commit(*install_, installedId);
+            bool completed = false;
+            {
+                TimingScope publication(platform_.microseconds, installPublishTiming_);
+                error = packages_.advanceCommit(*install_, installedId, completed);
+            }
+            if (error == Error::ok && !completed)
+                return;
             if (error == Error::ok) {
                 unlink((packages_.staging() + ".meta").c_str());
                 refreshProviders(installedId, false, install_.get());
             }
-            if (active) {
-                const auto launchError = error == Error::ok
-                    ? runtime_.launchPrepared(
-                          *install_, component, platform_.memory, platform_.capabilities)
-                    : launch(candidateId, component);
+            if (active && error == Error::ok) {
+                const auto launchError = runtime_.launchPrepared(
+                    *install_, component, platform_.memory, platform_.capabilities);
                 if (launchError != Error::ok) {
                     lastLogicError_ = launchError;
                     lastDiagnostic_ = runtime_.diagnostic();
@@ -831,7 +846,8 @@ void Core::advanceInstall() {
         events_.post({4, 0, runtime_.generation()});
     } else
         ++requestErrors_;
-    installReply_ = std::move(reply);
+    if (installOwner_)
+        installReply_ = std::move(reply);
     install_.reset();
     refreshCompanionDemand();
 }
@@ -908,7 +924,8 @@ Frame Core::handle(const Frame &request, Session &session) {
     else if (install_ &&
         (request.method == Method::install_begin || request.method == Method::install_chunk ||
             request.method == Method::install_commit || request.method == Method::remove ||
-            request.method == Method::rollback || request.method == Method::recover))
+            request.method == Method::rollback || request.method == Method::recover ||
+            (installPermissionsRevoked_ && request.method == Method::permission_set)))
         fail(Error::invalid_state);
     else
         switch (request.method) {
@@ -944,6 +961,7 @@ Frame Core::handle(const Frame &request, Session &session) {
             values["metrics_requests"] = std::to_string(metricRequests_);
             values["install_steps"] = std::to_string(installSteps_);
             values["install_active"] = install_ ? "1" : "0";
+            values["install_publishing"] = install_ && install_->publishing() ? "1" : "0";
             values["epoch_durable_writes"] = std::to_string(epochWrites_);
             values["epoch_write_errors"] = std::to_string(epochWriteErrors_);
             values["epoch_checkpoint_disabled"] =
@@ -958,6 +976,7 @@ Frame Core::handle(const Frame &request, Session &session) {
             if (platform_.microseconds) {
                 addTiming("request", requestTiming_);
                 addTiming("install_step", installTiming_);
+                addTiming("install_publish", installPublishTiming_);
                 addTiming("logic", logicTiming_);
                 addTiming("scene", sceneTiming_);
                 addTiming("paint", paintTiming_);

@@ -142,11 +142,21 @@ separate fixed bounds. Runtime, input and other clients continue between steps;
 catalog mutations and further upload chunks return `invalid_state`. Application
 switching remains allowed; restart requirements are decided at publication.
 
-Owner disconnect cancels unfinished verification and closes files while retaining
-staging/metadata for resume. Once publication commits, disconnect only discards an
-undelivered reply; reconnecting clients must inspect the catalog. Flare cancels by
-disconnecting, waits up to 45 seconds for commit and reports completion only after
-success.
+Owner disconnect before publication cancels validation, closes files and preserves
+staging/metadata for resume. Once publication starts, its four stages (proof check,
+rollback reference, object move, atomic ref replacement) finish even without the
+session; an undelivered reply is discarded. Reconnecting clients inspect the
+catalog. Flare cancels by disconnecting, which cannot undo durable publication;
+it waits up to 45 seconds and reports completion only after success.
+
+Before publication, garbage collection handles one directory entry or one pair of
+current/previous references per tick, with memory independent of catalog size.
+Only unreferenced content-addressed objects are removed. Objects orphaned by this
+publication are collected at the next install or startup. Permission revocation
+is a separate step; an empty revocation performs no Flash write. New permission_set
+requests are rejected until publication finishes. The old Runtime continues during
+reference writes and survives publication failures. Pre-publication cleanup errors
+reject the commit without changing the active version.
 
 `PreparedInstall` binds proof to an open immutable file and PackageManager revision.
 Publication checks the revision, original reference, open-file version and staging
@@ -160,8 +170,9 @@ Permissions are never cached. Factory/current packages use resumable validators.
 Firmware sets `Platform::require_factory=true`; standalone simulation may omit a
 factory directory. An available but corrupt factory catalog is never ignored.
 
-Atomic filesystem metadata operations, durable writes, metadata garbage collection
-and rare rollback/recovery paths remain synchronous. A byte quantum is not a strict
+Each publication stage returns control to the owner. Individual atomic filesystem
+operations/durable writes and rare rollback/recovery paths remain synchronous;
+install_publish_* counters measure publication stages separately. A byte quantum is not a strict
 wall-clock guarantee on slow or failed media. Board stress validation is required.
 
 ## Memory budgets and launch

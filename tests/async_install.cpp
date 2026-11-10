@@ -44,6 +44,21 @@ static std::string digest(const Bytes &data) {
     }
     return result;
 }
+static std::string diagnostic(Core &core, Session &session, std::string_view key) {
+    const auto frame = core.handle({Method::diagnostics, 91, false, {}}, session);
+    Reader reader{frame.payload};
+    CHECK(reader.n(2) == uint16_t(Error::ok));
+    const auto count = reader.n(2);
+    std::string found;
+    for (unsigned i = 0; i < count; ++i) {
+        const auto name = reader.text(80);
+        const auto value = reader.text(192);
+        if (name == key)
+            found = value;
+    }
+    CHECK(reader.done());
+    return found;
+}
 int main(int argc, char **argv) {
     CHECK(argc == 6);
     const auto bulk = load(argv[4]);
@@ -152,9 +167,14 @@ int main(int argc, char **argv) {
     const auto update = load(argv[5]);
     CHECK(writeAtomic(core.packages().staging(), update));
     std::unique_ptr<PreparedInstall> prepared;
+    // Garbage collection is incremental and protects both current and rollback refs.
+    const auto orphan = std::filesystem::path(argv[1]) / (std::string(64, 'f') + ".ignit");
+    CHECK(writeAtomic(orphan.string(), {bulk.data(), 64}));
     CHECK(core.packages().prepareCommit(prepared) == Error::ok);
     while (!prepared->ready())
         CHECK(prepared->advance(4096) == Error::ok);
+    CHECK(!std::filesystem::exists(orphan));
+    CHECK(!prepared->publishing());
     // Windows prevents replacement of the locked source. POSIX permits rename,
     // so publication must detect that the path names a different inode.
 #ifdef _WIN32
@@ -183,17 +203,48 @@ int main(int argc, char **argv) {
             installed.manifest.version == 1);
         CHECK(core.runtime().state() == State::active && core.runtime().generation() == generation);
     }
+    // A failed durable publication must leave the running instance intact.
+    CHECK(writeAtomic(core.packages().staging(), update));
+    const auto failedMetadata = std::to_string(update.size()) + ":" + digest(update);
+    CHECK(writeAtomic(core.packages().staging() + ".meta",
+        {reinterpret_cast<const uint8_t *>(failedMetadata.data()), failedMetadata.size()}));
+    const auto blockedReference = std::filesystem::path(argv[1]) / (counterId + ".ref.tmp");
+    CHECK(std::filesystem::create_directory(blockedReference));
+    CHECK(!core.process({Method::install_commit, 71, false, {}}, owner));
+    ticks = 0;
+    while (!core.replyReady(owner) && ticks++ < 2000) {
+        now += 100;
+        core.tick();
+        CHECK(core.runtime().generation() == generation && core.runtime().state() == State::active);
+    }
+    CHECK(core.takeReply(owner, reply) && u16(reply.payload.data()) == uint16_t(Error::io_error));
+    CHECK(std::filesystem::remove(blockedReference));
+    CHECK(core.packages().locate(counterId, installed) == Error::ok &&
+        installed.manifest.version == 1);
     CHECK(writeAtomic(core.packages().staging(), update));
     const auto updateMetadata = std::to_string(update.size()) + ":" + digest(update);
     CHECK(writeAtomic(core.packages().staging() + ".meta",
         {reinterpret_cast<const uint8_t *>(updateMetadata.data()), updateMetadata.size()}));
     CHECK(!core.process({Method::install_commit, 52, false, {}}, owner));
     ticks = 0;
-    while (!core.replyReady(owner) && ticks++ < 1000) {
+    while (diagnostic(core, control, "install_publishing") != "1" && ticks++ < 1000) {
         now += 100;
         core.tick();
     }
-    CHECK(core.takeReply(owner, reply) && u16(reply.payload.data()) == uint16_t(Error::ok));
+    CHECK(ticks < 1000 && !core.replyReady(owner));
+    CHECK(core.runtime().manifest().version == 1 && core.runtime().state() == State::active);
+    const auto permission = core.process({Method::permission_set, 92, false, {}}, control);
+    CHECK(permission && u16(permission->payload.data()) == uint16_t(Error::invalid_state));
+    core.disconnect(owner); // Publication must finish, but never reply to a replacement session.
+    CHECK(diagnostic(core, control, "install_active") == "1");
+    while (diagnostic(core, control, "install_active") == "1" && ticks++ < 1000) {
+        now += 100;
+        core.tick();
+    }
+    CHECK(ticks < 1000 && !core.replyReady(owner));
+    CHECK(!core.takeReply(owner, reply));
+    CHECK(core.packages().locate(counterId, installed) == Error::ok &&
+        installed.manifest.version == 2);
     CHECK(core.runtime().state() == State::active && core.runtime().scripted());
     CHECK(core.runtime().manifest().id == counterId && core.runtime().manifest().version == 2);
     CHECK(core.runtime().generation() != generation);
