@@ -42,6 +42,8 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
     MemoryBudget available, uint64_t caps) {
     if (!fits(m.budget, available) || (availableMemory_ && !fits(m.budget, availableMemory_())))
         return Error::resource_exhausted;
+    if (!candidate.unchanged())
+        return Error::stale_handle;
     if ((m.capabilities & caps) != m.capabilities)
         return Error::not_supported;
     auto error = Error::ok;

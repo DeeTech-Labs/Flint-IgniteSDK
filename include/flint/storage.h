@@ -69,6 +69,8 @@ class PackageManager {
     uint64_t capabilities_;
     uint64_t revision_{};
     bool requireFactory_{};
+    Error inspectOpened(
+        const std::string &path, Manifest &manifest, File &file, Package &package) const;
 
 public:
     PackageManager(std::string root, std::string factory, MemoryBudget available,
@@ -84,6 +86,8 @@ public:
     std::vector<Installed> list() const;
     Error inspect(const std::string &path, Manifest &manifest) const;
     Error locate(std::string_view id, Installed &result) const;
+    // Same call-scoped immutable file and validation result; no global/catalog cache.
+    Error locate(std::string_view id, Installed &result, File &file, Package &package) const;
     Error commit(const std::string &staging, std::string &installedId);
     Error prepareCommit(std::unique_ptr<PreparedInstall> &prepared,
         std::string_view transferHash = {}, uint32_t expectedSize = 0);

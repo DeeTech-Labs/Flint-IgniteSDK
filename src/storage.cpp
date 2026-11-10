@@ -217,12 +217,18 @@ Error PackageManager::begin() {
     return Error::ok;
 }
 Error PackageManager::inspect(const std::string &path, Manifest &m) const {
-    File f;
-    if (!f.open(path))
+    File file;
+    Package package;
+    return inspectOpened(path, m, file, package);
+}
+Error PackageManager::inspectOpened(
+    const std::string &path, Manifest &manifest, File &file, Package &package) const {
+    package.close();
+    if (!file.open(path))
         return Error::io_error;
-    Package p;
-    auto error = p.open(f.source());
-    return error == Error::ok ? validateApplication(p, m, available_, capabilities_) : error;
+    const auto error = package.open(file.source());
+    return error == Error::ok ? validateApplication(package, manifest, available_, capabilities_)
+                              : error;
 }
 
 static void scan(const std::string &path, std::string_view suffix,
@@ -308,6 +314,12 @@ std::vector<Installed> PackageManager::list() const {
     return result;
 }
 Error PackageManager::locate(std::string_view id, Installed &result) const {
+    File file;
+    Package package;
+    return locate(id, result, file, package);
+}
+Error PackageManager::locate(
+    std::string_view id, Installed &result, File &file, Package &package) const {
     if (!identifier(id)) {
         return Error::invalid_argument;
     }
@@ -315,7 +327,7 @@ Error PackageManager::locate(std::string_view id, Installed &result) const {
     scan(factory_, ".ignit", [&](const auto &name) {
         Manifest manifest;
         const auto path = factory_ + "/" + name;
-        if (inspect(path, manifest) == Error::ok && manifest.id == id) {
+        if (inspectOpened(path, manifest, file, package) == Error::ok && manifest.id == id) {
             result = {std::move(manifest), path, true};
             found = true;
             return false;
@@ -329,7 +341,7 @@ Error PackageManager::locate(std::string_view id, Installed &result) const {
         return Error::source_unavailable;
     const auto path = root_ + "/" + object;
     Manifest manifest;
-    if (inspect(path, manifest) != Error::ok || manifest.id != id)
+    if (inspectOpened(path, manifest, file, package) != Error::ok || manifest.id != id)
         return Error::source_unavailable;
     result = {std::move(manifest), path, false};
     return Error::ok;

@@ -111,7 +111,7 @@ uint64_t Core::nextWake() const {
     const auto at = platform_.monotonic();
     if (install_ || !events_.empty())
         return at;
-    auto next = runtime_.nextWake();
+    auto next = std::min(runtime_.nextWake(), nextEpochSave_);
     if (boundProvider_ && boundAt_ <= UINT64_MAX - CompanionTtlMs)
         next = std::min(next, boundAt_ + CompanionTtlMs);
     if (epoch_ && at >= base_) {
@@ -203,6 +203,8 @@ Error Core::begin() {
         if (tail && !*tail && value >= 1700000000 && value <= 4102444800ULL)
             epoch_ = value;
     }
+    if (epoch_ && base_ <= UINT64_MAX - 60000)
+        nextEpochSave_ = base_ + 60000;
     auto data = readText(packages_.root() + "/grants.bin", 16384);
     Reader r{{reinterpret_cast<const uint8_t *>(data.data()), data.size()}};
     auto count = r.n(2);
@@ -279,10 +281,13 @@ Error Core::activateRole(Role role, std::string_view selection) {
 
 Error Core::launch(std::string_view id, std::string_view component) {
     Installed p;
-    auto error = packages_.locate(id, p);
+    File file;
+    Package package;
+    auto error = packages_.locate(id, p, file, package);
     if (error != Error::ok)
         return error;
-    auto result = runtime_.launch(p, component, platform_.memory, platform_.capabilities);
+    auto result = runtime_.launchValidated(
+        file, package, std::move(p.manifest), component, platform_.memory, platform_.capabilities);
     if (result != Error::ok) {
         lastLogicError_ = result;
         lastDiagnostic_ = runtime_.diagnostic();
@@ -496,7 +501,28 @@ Error Core::receiveMetrics(Reader &in, const Session &session) {
     sampleAt_ = at;
     return Error::ok;
 }
+void Core::checkpointEpoch() {
+    const auto at = platform_.monotonic();
+    if (!epoch_ || nextEpochSave_ == UINT64_MAX || at < nextEpochSave_)
+        return;
+    const auto text = std::to_string(now());
+    const auto saved = writeAtomic(
+        packages_.root() + "/epoch", {reinterpret_cast<const uint8_t *>(text.data()), text.size()});
+    if (saved) {
+        ++epochWrites_;
+        lastSave_ = at;
+        epochFailures_ = 0;
+    } else {
+        ++epochWriteErrors_;
+        ++epochFailures_;
+    }
+    // Three failures stop automatic writes until an explicit successful time_set or reboot.
+    const uint64_t delay = uint64_t(60000)
+        << std::min<uint32_t>(epochFailures_ ? epochFailures_ - 1 : 0, 2);
+    nextEpochSave_ = epochFailures_ >= 3 || at > UINT64_MAX - delay ? UINT64_MAX : at + delay;
+}
 bool Core::tick() {
+    checkpointEpoch();
     advanceInstall();
     refreshCompanionDemand();
     const auto at = platform_.monotonic();
@@ -636,12 +662,6 @@ const Values &Core::bindings() {
 }
 Error Core::scene(FlintRender::Scene &scene) {
     TimingScope timing(platform_.microseconds, sceneTiming_);
-    if (now() && platform_.monotonic() - lastSave_ >= 60000) {
-        auto text = std::to_string(now());
-        writeAtomic(packages_.root() + "/epoch",
-            {reinterpret_cast<const uint8_t *>(text.data()), text.size()});
-        lastSave_ = platform_.monotonic();
-    }
     auto error = runtime_.render(bindings(), scene);
     if (error != Error::ok) {
         const auto failed = runtime_.manifest().id + "/" + runtime_.component().id;
@@ -912,6 +932,10 @@ Frame Core::handle(const Frame &request, Session &session) {
             values["metrics_requests"] = std::to_string(metricRequests_);
             values["install_steps"] = std::to_string(installSteps_);
             values["install_active"] = install_ ? "1" : "0";
+            values["epoch_durable_writes"] = std::to_string(epochWrites_);
+            values["epoch_write_errors"] = std::to_string(epochWriteErrors_);
+            values["epoch_checkpoint_disabled"] =
+                epoch_ && nextEpochSave_ == UINT64_MAX ? "1" : "0";
             values["event_queue_peak"] = std::to_string(events_.peak());
             values["event_queue_overflows"] = std::to_string(events_.overflows());
             const auto addTiming = [&](const char *name, const Timing &sample) {
@@ -1194,9 +1218,15 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto text = std::to_string(epoch);
             if (!writeAtomic(packages_.root() + "/epoch",
                     {reinterpret_cast<const uint8_t *>(text.data()), text.size()})) {
+                ++epochWriteErrors_;
                 epoch_ = previous;
                 base_ = previousBase;
                 fail(Error::io_error);
+            } else {
+                ++epochWrites_;
+                epochFailures_ = 0;
+                lastSave_ = base_;
+                nextEpochSave_ = base_ > UINT64_MAX - 60000 ? UINT64_MAX : base_ + 60000;
             }
             break;
         }
@@ -1354,14 +1384,11 @@ Frame Core::handle(const Frame &request, Session &session) {
                 break;
             }
             Installed p;
-            error = packages_.locate(id, p);
+            File file;
+            Package package;
+            error = packages_.locate(id, p, file, package);
             if (error != Error::ok)
                 break;
-            File file;
-            if (!file.open(p.path)) {
-                fail(Error::io_error);
-                break;
-            }
             if (offset > file.size) {
                 fail(Error::invalid_argument);
                 break;

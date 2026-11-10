@@ -61,6 +61,8 @@ int main(int argc, char **argv) {
         ++steps;
     }
     CHECK(steps > 100 && package.count() > 0);
+    // One body pass computes both digests; index validation adds only its own bytes.
+    CHECK(source.readBytes == bulk.size() + package.count() * EntrySize);
     Sha256 full;
     full.update(bulk);
     CHECK(full.finish() == validation.transferDigest());

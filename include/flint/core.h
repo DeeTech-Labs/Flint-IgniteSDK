@@ -44,7 +44,10 @@ class Core {
     Values settings_, theme_, locale_;
     EventBus events_;
     std::vector<PermissionRecord> grants_;
-    uint64_t epoch_{}, base_{}, lastSave_{};
+    uint64_t epoch_{}, base_{}, lastSave_{}, nextEpochSave_{UINT64_MAX};
+    uint64_t epochWrites_{}, epochWriteErrors_{};
+    uint32_t epochFailures_{};
+    void checkpointEpoch();
     struct CompanionState {
         double cpu{}, ram{};
         uint64_t at{}, providerSession{}, consumerGeneration{};

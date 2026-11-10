@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <filesystem>
 #include <flint/core.h>
 #include <fstream>
 #include <iostream>
@@ -401,6 +402,55 @@ int main(int argc, char **argv) {
     CHECK(std::stoull(counters.at("request_max_us")) >= 10);
     CHECK(std::stoull(counters.at("resource_read_bytes")) >= header.size());
     CHECK(std::stoull(counters.at("resource_read_errors")) > 0);
+    // Scene preparation never writes epoch; retries are bounded and explicitly recoverable.
+    Platform clockPlatform = platform;
+    uint64_t clock = 0;
+    clockPlatform.monotonic = [&] { return clock; };
+    clockPlatform.diagnostics = {};
+    Core checkpoint(root + "/checkpoint-store", root + "/factory", clockPlatform);
+    CHECK(checkpoint.begin() == Error::ok);
+    Session clockSession{true, true, 1000};
+    CHECK(u16(checkpoint.handle({Method::time_set, 1, false, epoch.data}, clockSession)
+                  .payload.data()) == 0);
+    const auto epochPath = root + "/checkpoint-store/epoch";
+    const auto persisted = readText(epochPath);
+    std::filesystem::create_directory(epochPath + ".tmp");
+    const auto snapshot = [&] {
+        const auto reply = checkpoint.handle({Method::diagnostics, 2, false, {}}, clockSession);
+        Reader fields{reply.payload};
+        fields.n(2);
+        Values result;
+        const auto count = fields.n(2);
+        for (unsigned i = 0; i < count; ++i) {
+            auto key = fields.text(80);
+            result[key] = fields.text(192);
+        }
+        CHECK(fields.done());
+        return result;
+    };
+    clock = 60000;
+    for (unsigned i = 0; i < 10; ++i)
+        CHECK(checkpoint.scene(scene) == Error::ok);
+    CHECK(readText(epochPath) == persisted);
+    CHECK(snapshot().at("epoch_write_errors") == "0");
+    for (const auto at : {60000, 120000, 240000}) {
+        clock = at;
+        checkpoint.tick();
+    }
+    CHECK(snapshot().at("epoch_write_errors") == "3");
+    CHECK(snapshot().at("epoch_checkpoint_disabled") == "1");
+    clock += 3600000;
+    checkpoint.tick();
+    CHECK(snapshot().at("epoch_write_errors") == "3");
+    std::filesystem::remove(epochPath + ".tmp");
+    CHECK(u16(checkpoint.handle({Method::time_set, 3, false, epoch.data}, clockSession)
+                  .payload.data()) == 0);
+    checkpoint.tick();
+    CHECK(snapshot().at("epoch_durable_writes") == "2");
+    clock += 60000;
+    checkpoint.tick();
+    CHECK(snapshot().at("epoch_durable_writes") == "3");
+    CHECK(readText(epochPath) == std::to_string(1793740060));
     std::cout << "Core installation/resume/update/rollback, consent/revocation, factory "
                  "protection, external resources, lifecycle and binary framing: passed\n";
 }
