@@ -89,6 +89,16 @@ bool File::reopenMoved(const std::string &path) {
     }
     return true;
 }
+bool File::refreshAfterRename() {
+    struct stat status{};
+    if (!handle || fstat(fileno(handle), &status))
+        return false;
+    const auto current = fileVersion(status);
+    if (current[0] != version_[0] || current[1] != version_[1] || current[3] != version_[3])
+        return false;
+    version_ = current;
+    return true;
+}
 bool File::sameObject(const File &other) const {
     if (!handle || !other.handle)
         return false;
@@ -748,7 +758,8 @@ Error PackageManager::advanceCommit(PreparedInstall &prepared, std::string &id, 
             state.candidateFile.close();
         if (replaceFile(staging().c_str(), objectPath.c_str()))
             return state.error = Error::io_error;
-        if (!renameOpenFiles_ && !state.candidateFile.reopenMoved(objectPath))
+        if (renameOpenFiles_ ? !state.candidateFile.refreshAfterRename()
+                             : !state.candidateFile.reopenMoved(objectPath))
             return state.error = Error::io_error;
         break;
     case 3:

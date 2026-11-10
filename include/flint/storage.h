@@ -37,6 +37,8 @@ public:
     bool unchanged() const;
     // For an exclusively owned filesystem whose rename requires closing the source.
     bool reopenMoved(const std::string &path);
+    // Refresh rename-only ctime changes on an already verified, still-open object.
+    bool refreshAfterRename();
     bool sameObject(const File &other) const;
 };
 struct Installed {

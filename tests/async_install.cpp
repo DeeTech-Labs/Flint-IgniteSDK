@@ -102,6 +102,25 @@ int main(int argc, char **argv) {
     platform.free_storage = [] { return uint64_t(4 * 1024 * 1024); };
     Core core(argv[1], argv[2], platform);
     CHECK(core.begin() == Error::ok);
+    // POSIX rename changes ctime without changing file content. Refresh only
+    // that metadata after the owner-controlled rename; keep normal checks strict.
+    const auto sourcePath = (std::filesystem::path(argv[1]) / "proof-source.part").string();
+    const auto movedPath = (std::filesystem::path(argv[1]) / "proof-moved.part").string();
+    CHECK(writeAtomic(sourcePath, {bulk.data(), 64}));
+    File proof;
+    CHECK(proof.open(sourcePath) && proof.unchanged());
+    std::filesystem::rename(sourcePath, movedPath);
+    CHECK(proof.refreshAfterRename() && proof.unchanged());
+#ifndef _WIN32
+    {
+        std::ofstream changed(movedPath, std::ios::binary | std::ios::trunc);
+        changed << "changed";
+    }
+    CHECK(!proof.refreshAfterRename() && !proof.unchanged());
+#endif
+    proof.close();
+    CHECK(std::filesystem::remove(movedPath));
+
     const auto counter = load(argv[3]);
     CHECK(writeAtomic(core.packages().staging(), counter));
     std::string counterId;
