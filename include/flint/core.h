@@ -68,7 +68,7 @@ class Core {
     bool sampleReceived_{};
     void refreshCompanionDemand();
     Error handleCompanion(Method method, Reader &input, Session &session);
-    Error lastLogicError_{Error::ok};
+    Error lastLogicError_{Error::ok}, lastBlePolicyError_{Error::ok};
     LuaDiagnostic lastDiagnostic_{};
     std::string lastLogicPackage_, lastLogicComponent_;
     uint64_t privateWriteAt_{};

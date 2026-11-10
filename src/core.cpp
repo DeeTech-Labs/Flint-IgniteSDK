@@ -201,7 +201,8 @@ Error Core::begin() {
             settings_["ble_enabled"] = "1";
         const bool enabled = settings_["ble_enabled"] != "0";
         // A radio failure must not prevent autonomous local startup or USB recovery.
-        if (platform_.ble_check(enabled) == Error::ok)
+        lastBlePolicyError_ = platform_.ble_check(enabled);
+        if (lastBlePolicyError_ == Error::ok)
             platform_.ble_apply(enabled);
     }
     auto epoch = readText(packages_.root() + "/epoch", 24);
@@ -928,6 +929,7 @@ Frame Core::handle(const Frame &request, Session &session) {
                 break;
             }
             auto values = platform_.diagnostics ? platform_.diagnostics() : Values{};
+            values["last_ble_policy_error"] = std::to_string(uint16_t(lastBlePolicyError_));
             values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
             values["runtime_resident_bytes"] = std::to_string(sizeof(Runtime));
             values["runtime_native_heap_estimate"] = std::to_string(runtime_.nativeHeapEstimate());
@@ -1271,7 +1273,7 @@ Frame Core::handle(const Frame &request, Session &session) {
                     fail(Error::invalid_argument);
                     break;
                 }
-                error = platform_.ble_check(value == "1");
+                error = lastBlePolicyError_ = platform_.ble_check(value == "1");
                 if (error != Error::ok)
                     break;
                 const auto old = settings_;

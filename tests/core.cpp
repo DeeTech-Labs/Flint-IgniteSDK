@@ -373,6 +373,19 @@ int main(int argc, char **argv) {
     parser.feed(corrupt, receive);
     parser.feed(wire, receive);
     CHECK(frames == 2);
+    Frame maximum{Method::info, 42, false, Bytes(MaxPayload, 0)};
+    const auto maximumWire = encodeFrame(maximum);
+    FrameParser maximumParser;
+    unsigned maximumFrames = 0;
+    for (unsigned cycle = 0; cycle < 10; ++cycle)
+        for (const auto byte : maximumWire)
+            maximumParser.feed({&byte, 1}, [&](Frame f) {
+                CHECK(f.payload.size() == MaxPayload);
+                ++maximumFrames;
+            });
+    CHECK(maximumFrames == 10 && maximumParser.bufferCapacity() <= MaxPayload + 20);
+    maximumParser.reset();
+    CHECK(maximumParser.bufferCapacity() <= MaxPayload + 20);
     EventBus bus;
     for (int i = 0; i < 32; ++i)
         CHECK(bus.post({uint32_t(i)}) == Error::ok);
@@ -482,6 +495,17 @@ int main(int argc, char **argv) {
     CHECK(setRadio("0") == Error::ok && !radioEnabled && radioChanges == 2);
     rejectRadio = true;
     CHECK(setRadio("1") == Error::resource_exhausted && !radioEnabled && radioChanges == 2);
+    const auto radioDiagnostic = radio.handle({Method::diagnostics, 4, false, {}}, radioSession);
+    Reader radioFields{radioDiagnostic.payload};
+    CHECK(radioFields.n(2) == 0);
+    const auto radioCount = radioFields.n(2);
+    bool recordedRadioError = false;
+    for (unsigned i = 0; i < radioCount; ++i) {
+        const auto key = radioFields.text(80), value = radioFields.text(192);
+        if (key == "last_ble_policy_error")
+            recordedRadioError = value == "10";
+    }
+    CHECK(radioFields.done() && recordedRadioError);
     Core radioRestart(radioRoot, root + "/factory", radioPlatform);
     CHECK(radioRestart.begin() == Error::ok && !radioEnabled && radioChanges == 3);
     CHECK(radioRestart.runtime().manifest().id == "system.clock");

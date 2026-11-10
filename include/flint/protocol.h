@@ -58,6 +58,9 @@ class FrameParser {
     Bytes bytes_;
 
 public:
+    size_t bufferCapacity() const {
+        return bytes_.capacity();
+    }
     void reset() {
         bytes_.clear();
     }
@@ -73,6 +76,10 @@ public:
                 bytes_.erase(bytes_.begin());
                 continue;
             }
+            // Once the bounded header is known, reserve the exact frame size.
+            // Byte-wise geometric growth otherwise retains 8192 bytes for a 4116-byte frame.
+            if (bytes_.capacity() < 20 + size)
+                bytes_.reserve(20 + size);
             if (bytes_.size() < 20 + size)
                 continue;
             if (crc32(std::span(bytes_).first(16 + size)) == u32(bytes_.data() + 16 + size)) {
