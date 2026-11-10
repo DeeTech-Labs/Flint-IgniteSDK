@@ -35,6 +35,8 @@ public:
     void close();
     Source source();
     bool unchanged() const;
+    // For an exclusively owned filesystem whose rename requires closing the source.
+    bool reopenMoved(const std::string &path);
     bool sameObject(const File &other) const;
 };
 struct Installed {
@@ -69,14 +71,16 @@ class PackageManager {
     uint64_t capabilities_;
     uint64_t revision_{};
     bool requireFactory_{};
+    bool renameOpenFiles_{true};
     Error inspectOpened(
         const std::string &path, Manifest &manifest, File &file, Package &package) const;
 
 public:
     PackageManager(std::string root, std::string factory, MemoryBudget available,
-        uint64_t capabilities, bool requireFactory = false)
+        uint64_t capabilities, bool requireFactory = false, bool renameOpenFiles = true)
         : root_(std::move(root)), factory_(std::move(factory)), available_(available),
-          capabilities_(capabilities), requireFactory_(requireFactory) {}
+          capabilities_(capabilities), requireFactory_(requireFactory),
+          renameOpenFiles_(renameOpenFiles) {}
     // Changes only at catalog mutation boundaries; never caches authorization.
     uint64_t revision() const {
         return revision_;

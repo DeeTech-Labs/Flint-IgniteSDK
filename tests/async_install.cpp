@@ -82,6 +82,7 @@ int main(int argc, char **argv) {
     uint64_t now = 1000;
     Platform platform;
     platform.build_id = "async-install-test";
+    platform.rename_open_files = false; // Exercise close/rename/reopen as required by LittleFS.
     platform.monotonic = [&] { return now; };
     platform.free_storage = [] { return uint64_t(4 * 1024 * 1024); };
     Core core(argv[1], argv[2], platform);

@@ -49,7 +49,7 @@ static uint64_t generation(const Installed &p) {
 Core::Core(std::string root, std::string factory, Platform platform)
     : platform_(std::move(platform)),
       packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities,
-          platform_.require_factory) {
+          platform_.require_factory, platform_.rename_open_files) {
     runtime_.host({this,
         [](void *context, AppService service, std::string_view key, std::string_view value,
             AppReply &reply) {

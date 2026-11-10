@@ -29,6 +29,7 @@ struct Platform {
     // Check is read-only; apply queues a hardware intent after durable settings commit.
     std::function<Error(bool)> ble_check;
     std::function<void(bool)> ble_apply;
+    bool rename_open_files{true};
     bool require_factory{};
 };
 struct Session {

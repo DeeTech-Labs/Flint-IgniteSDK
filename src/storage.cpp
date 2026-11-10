@@ -78,6 +78,17 @@ bool File::unchanged() const {
     struct stat status{};
     return handle && !fstat(fileno(handle), &status) && fileVersion(status) == version_;
 }
+bool File::reopenMoved(const std::string &path) {
+    const auto expected = version_;
+    if (!open(path))
+        return false;
+    // Rename can change ctime; size and content mtime must remain unchanged.
+    if (version_[0] != expected[0] || version_[1] != expected[1] || version_[3] != expected[3]) {
+        close();
+        return false;
+    }
+    return true;
+}
 bool File::sameObject(const File &other) const {
     if (!handle || !other.handle)
         return false;
@@ -650,6 +661,7 @@ Error PackageManager::commit(PreparedInstall &prepared, std::string &id) {
     if (!state.candidateFile.unchanged() || !currentStaging.open(staging()) ||
         !state.candidateFile.sameObject(currentStaging))
         return Error::stale_handle;
+    currentStaging.close();
     const auto &manifest = state.candidateManifest;
     const auto ref = root_ + "/" + manifest.id + ".ref";
     if (readText(ref) != state.previousRef)
@@ -660,8 +672,16 @@ Error PackageManager::commit(PreparedInstall &prepared, std::string &id) {
             {reinterpret_cast<const uint8_t *>(state.previousRef.data()),
                 state.previousRef.size()}))
         return Error::io_error;
-    if (replaceFile(staging().c_str(), (root_ + "/" + object).c_str()))
-        return Error::io_error;
+    const auto objectPath = root_ + "/" + object;
+    if (!renameOpenFiles_)
+        state.candidateFile.close();
+    if (replaceFile(staging().c_str(), objectPath.c_str()))
+        return state.error = Error::io_error;
+    if (!renameOpenFiles_) {
+        if (!state.candidateFile.reopenMoved(objectPath))
+            return state.error = Error::io_error;
+        // Package source still points to the same File; reopen validated its original size.
+    }
     if (!writeAtomic(ref, {reinterpret_cast<const uint8_t *>(object.data()), object.size()}))
         return Error::io_error;
     ++revision_;
