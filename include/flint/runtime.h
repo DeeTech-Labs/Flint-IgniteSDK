@@ -12,13 +12,18 @@ struct Event {
 class EventBus {
     std::array<Event, 32> queue_{};
     size_t head_{}, size_{};
+    size_t peak_{};
+    uint64_t overflows_{};
 
 public:
     Error post(Event e) {
-        if (size_ == queue_.size())
+        if (size_ == queue_.size()) {
+            ++overflows_;
             return Error::quota_exceeded;
+        }
         queue_[(head_ + size_) % queue_.size()] = e;
         ++size_;
+        peak_ = std::max(peak_, size_);
         return Error::ok;
     }
     bool poll(Event &e) {
@@ -32,12 +37,19 @@ public:
     bool empty() const {
         return !size_;
     }
+    size_t peak() const {
+        return peak_;
+    }
+    uint64_t overflows() const {
+        return overflows_;
+    }
     void clear() {
         head_ = size_ = 0;
     }
 };
 using Values = std::map<std::string, std::string, std::less<>>;
 class Runtime {
+    friend class Core;
     File file_;
     Package package_;
     Manifest manifest_;
@@ -47,14 +59,21 @@ class Runtime {
     ResourceManager resources_;
     LuaApp lua_;
     uint64_t generation_{};
+    uint64_t consumerGeneration_{};
     AppHost host_{};
     uint64_t capabilities_{};
+    std::function<MemoryBudget()> availableMemory_;
+    size_t nativeHeap_{}, nativePeak_{};
     bool loading_{}, focused_{true}, tickChanged_{}, pendingVisual_{};
     std::array<InputEvent, 16> inputs_{};
     size_t inputHead_{}, inputSize_{};
     Error appCall(
         AppService service, std::string_view key, std::string_view value, AppReply &reply);
     std::array<uint16_t, FlintRender::MaxData> bindingEnds_{};
+    Error launchValidated(File &file, Package &package, Manifest manifest,
+        std::string_view component, MemoryBudget available, uint64_t capabilities);
+    Error launchPrepared(PreparedInstall &prepared, std::string_view component,
+        MemoryBudget available, uint64_t capabilities);
 
 public:
     ~Runtime() {
@@ -63,6 +82,16 @@ public:
     Error launch(const Installed &installed, std::string_view component, MemoryBudget available,
         uint64_t caps);
     Error update(uint32_t elapsedMs, bool pressed = false);
+    // Called only at launch; package validation always uses the stable platform limits.
+    void availableMemory(std::function<MemoryBudget()> callback) {
+        availableMemory_ = std::move(callback);
+    }
+    size_t nativeHeapEstimate() const {
+        return nativeHeap_;
+    }
+    size_t nativePeakEstimate() const {
+        return nativePeak_;
+    }
     void host(AppHost host) {
         host_ = host;
     }
@@ -107,9 +136,14 @@ public:
     uint64_t generation() const {
         return generation_;
     }
+    // Provider data also expires across suspend/resume; input handles retain their contract.
+    uint64_t consumerGeneration() const {
+        return consumerGeneration_;
+    }
     ResourceManager &resources() {
         return resources_;
     }
 };
 Error loadValues(const Installed &package, const ComponentInfo &component, Values &values);
+Error loadValues(Package &package, const ComponentInfo &component, Values &values);
 } // namespace flint

@@ -21,7 +21,17 @@ int main(int argc, char **argv) {
     auto diagnostics = core.handle({Method::diagnostics, 1, false, {}}, session);
     Reader response{diagnostics.payload};
     CHECK(response.n(2) == uint16_t(Error::ok));
-    CHECK(response.n(2) == 3);
+    Values initialDiagnostics;
+    const auto diagnosticCount = response.n(2);
+    CHECK(diagnosticCount <= 128);
+    for (unsigned i = 0; i < diagnosticCount; ++i) {
+        auto key = response.text(80);
+        initialDiagnostics[key] = response.text(192);
+    }
+    CHECK(response.done());
+    CHECK(initialDiagnostics.at("last_logic_error") == "0");
+    CHECK(initialDiagnostics.at("lua_used_bytes") == "0");
+    CHECK(initialDiagnostics.at("lua_peak_bytes") == "0");
     CHECK(core.runtime().launch(
               {{}, argv[3], false}, "main", platform.memory, platform.capabilities) == Error::ok);
     FlintRender::Scene before, after;

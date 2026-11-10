@@ -2,8 +2,20 @@
 #include <flint/registry.h>
 #include <flint/runtime.h>
 namespace flint {
+static size_t manifestHeapEstimate(const Manifest &m) {
+    size_t bytes = m.id.capacity() + m.name.capacity() + m.publisher.capacity() + 3;
+    bytes += m.permissions.capacity() * sizeof(Declaration) +
+        m.components.capacity() * sizeof(ComponentInfo);
+    for (const auto &d : m.permissions)
+        bytes += d.permission.capacity() + d.scope.capacity() + 2;
+    for (const auto &c : m.components)
+        bytes += c.id.capacity() + 1;
+    return bytes;
+}
 Error Runtime::launch(
     const Installed &installed, std::string_view id, MemoryBudget available, uint64_t caps) {
+    if (availableMemory_ && !fits(installed.manifest.budget, availableMemory_()))
+        return Error::resource_exhausted;
     File candidate;
     if (!candidate.open(installed.path))
         return Error::io_error;
@@ -15,6 +27,26 @@ Error Runtime::launch(
     error = validateApplication(p, m, available, caps);
     if (error != Error::ok)
         return error;
+    return launchValidated(candidate, p, std::move(m), id, available, caps);
+}
+Error Runtime::launchPrepared(
+    PreparedInstall &prepared, std::string_view id, MemoryBudget available, uint64_t caps) {
+    if (!prepared.ready() || !prepared.committed())
+        return Error::invalid_state;
+    if (availableMemory_ && !fits(prepared.manifest().budget, availableMemory_()))
+        return Error::resource_exhausted;
+    return launchValidated(
+        prepared.file(), prepared.package(), prepared.releaseManifest(), id, available, caps);
+}
+Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::string_view id,
+    MemoryBudget available, uint64_t caps) {
+    if (!fits(m.budget, available) || (availableMemory_ && !fits(m.budget, availableMemory_())))
+        return Error::resource_exhausted;
+    if (!candidate.unchanged())
+        return Error::stale_handle;
+    if ((m.capabilities & caps) != m.capabilities)
+        return Error::not_supported;
+    auto error = Error::ok;
     bool canRender = false;
     for (auto &d : m.permissions)
         if (d.permission == "ui.render")
@@ -95,15 +127,17 @@ Error Runtime::launch(
             start = end + 1;
         }
     }
+    const auto nativeManifest = manifestHeapEstimate(m) + component.id.capacity() + 1;
+    const auto sceneBytes = bytes.capacity();
+    Bytes{}.swap(bytes);
     stop();
+    nativeHeap_ = nativeManifest;
+    nativePeak_ = nativeManifest + sceneBytes;
     bindingEnds_ = bindingEnds;
-    if (!file_.open(installed.path))
-        return Error::io_error;
-    error = package_.open(file_.source());
-    if (error != Error::ok) {
-        file_.close();
-        return error;
-    }
+    file_ = std::move(candidate);
+    package_ = std::move(p);
+    package_.relocate(file_.source());
+    p.close();
     manifest_ = std::move(m);
     component_ = std::move(component);
     template_ = scene;
@@ -115,6 +149,16 @@ Error Runtime::launch(
         package_.entry(i, code);
         if (code.type != Section::lua)
             continue;
+        const auto nativeLoad = nativeManifest + LuaApp::nativeBytes() + code.size;
+        // Preserve the existing Lua heap ceiling while charging native state and source peak.
+        if (nativeLoad + 16 * 1024 > manifest_.budget.internal_bytes) {
+            stop();
+            return Error::resource_exhausted;
+        }
+        const auto luaLimit = std::min<size_t>(manifest_.budget.internal_bytes - 16 * 1024,
+            manifest_.budget.internal_bytes - nativeLoad);
+        nativeHeap_ = nativeManifest + LuaApp::nativeBytes();
+        nativePeak_ = std::max<size_t>(nativePeak_, nativeLoad);
         Bytes source(code.size);
         error = package_.read(code, 0, source);
         loading_ = true;
@@ -130,20 +174,15 @@ Error Runtime::launch(
             bool(manifest_.capabilities & CapAppApi)};
         if (error == Error::ok)
             error = lua_.load({reinterpret_cast<const char *>(source.data()), source.size()},
-                manifest_.budget.internal_bytes - 16 * 1024, manifest_.budget.instructions,
-                template_, bridge);
+                uint32_t(luaLimit), manifest_.budget.instructions, template_, bridge);
         loading_ = false;
         if (error != Error::ok) {
-            lua_.stop();
-            resources_.bind(nullptr);
-            package_.close();
-            file_.close();
-            manifest_ = {};
-            component_ = {};
+            stop();
             return error;
         }
     }
     ++generation_;
+    ++consumerGeneration_;
     lifecycle_.dispatch(Lifecycle::create);
     return lifecycle_.dispatch(Lifecycle::activate);
 }
@@ -169,11 +208,18 @@ Error Runtime::update(uint32_t elapsedMs, bool pressed) {
 }
 Error Runtime::stop() {
     lua_.stop();
+    nativeHeap_ = nativePeak_ = 0;
     inputHead_ = inputSize_ = 0;
     tickChanged_ = pendingVisual_ = false;
     loading_ = false;
-    if (lifecycle_.state == State::empty)
+    if (lifecycle_.state == State::empty) {
+        resources_.bind(nullptr);
+        package_.close();
+        file_.close();
+        manifest_ = {};
+        component_ = {};
         return Error::ok;
+    }
     if (lifecycle_.state == State::active)
         lifecycle_.dispatch(Lifecycle::deactivate);
     lifecycle_.dispatch(Lifecycle::destroy);
@@ -181,7 +227,9 @@ Error Runtime::stop() {
     package_.close();
     file_.close();
     manifest_ = {};
+    component_ = {};
     ++generation_;
+    ++consumerGeneration_;
     return Error::ok;
 }
 Error Runtime::suspend() {
@@ -197,6 +245,7 @@ Error Runtime::suspend() {
     }
     inputHead_ = inputSize_ = 0;
     lifecycle_.dispatch(Lifecycle::deactivate);
+    ++consumerGeneration_;
     return lifecycle_.dispatch(Lifecycle::suspend);
 }
 Error Runtime::resume() {
@@ -204,6 +253,7 @@ Error Runtime::resume() {
     if (error != Error::ok)
         return error;
     lifecycle_.dispatch(Lifecycle::activate);
+    ++consumerGeneration_;
     lua_.resumeClock(host_.monotonic ? host_.monotonic(host_.context) : 0);
     if (lua_.active() && (manifest_.capabilities & CapAppApi)) {
         error = lua_.event("resume", 0);
@@ -436,17 +486,13 @@ Error loadValues(const Installed &installed, const ComponentInfo &component, Val
     auto error = p.open(file.source());
     if (error != Error::ok)
         return error;
-    Entry e;
-    bool found = false;
-    for (uint32_t i = 0; i < p.count(); ++i) {
-        p.entry(i, e);
-        if (e.id == component.section) {
-            found = true;
-            break;
-        }
-    }
-    if (!found || e.size > 4096)
+    return loadValues(p, component, values);
+}
+Error loadValues(Package &p, const ComponentInfo &component, Values &values) {
+    Package::View section;
+    if (p.view(component.section, section) != Error::ok || section.info().size > 4096)
         return Error::invalid_package;
+    const auto e = section.info();
     Bytes bytes(e.size);
     if (p.read(e, 0, bytes) != Error::ok)
         return Error::io_error;

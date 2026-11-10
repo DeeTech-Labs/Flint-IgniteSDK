@@ -110,3 +110,89 @@ See [licensing scope](LICENSING.md). Russian is canonical; this is the English t
 ## Application API 1
 
 This additive Lua extension requires capability 128; binary formats, protocol identifiers and ContractRevision are unchanged. Runtime owns the input queue (16), timers (8), bounded string values and diagnostics. Core implements authorized read-only services and private package storage (16 keys, 4096 bytes, atomic replacement, CRC-32, one successful write per second per Core). Callbacks in a tick share the instruction budget; service calls are capped at 32. Adapters use postInput and nextWake; hardware integration remains in consumers. C++ class sizes changed and require rebuilding consumers. Additional fixed structures and storage temporaries do not expand the Lua heap: the existing 16 KiB deduction is unchanged, but total native peaks/stack need new device measurements. See [SDK.md](SDK.md#application-api-1-input-state-and-services) for the full contract and limits. The simulator executes the same Core/Runtime with virtual-time scenarios.
+
+
+## Companion Demand and diagnostics
+
+[Companion Demand v1](COMPANION.md) separates Device Control and session-bound data
+providers within one Core. Disconnecting another client does not clear metrics or
+local runtime events. Consumer generations also change on suspend/resume while
+input handle generations retain their existing contract.
+
+Optional `Platform::microseconds` enables cumulative count/total/max timings for
+requests, logic ticks, scenes, paint and resource reads. Resource reads/errors and
+EventBus overflows are counted without extra tasks or queues. Phases may be nested.
+Diagnostics do not dirty the scene. Replies fit MaxPayload and 128 fields, prioritize
+Lua fault details, and mark omitted optional fields with `diagnostics_truncated=1`.
+Python clients accept numeric and textual values. C++ class sizes changed: rebuild
+SDK and consumers together. Wire/package ContractRevision remains unchanged.
+
+
+## Resumable installation verification
+
+Adapters use `Core::process`, `tick`, `replyReady` and `takeReply` on one owner.
+`install_commit` may defer its existing reply (same method, request ID and payload)
+until validation and publication complete. `Core::handle` remains the synchronous
+native interface. Wire, package and `incoming.part.meta` formats stay unchanged.
+
+Core holds one pending installation and one result slot. Index/hash verification
+reads at most 4096 bytes per tick. Lua/UI sections are read in chunks; each step
+decodes at most one bounded scene. Header, manifest and reference validation have
+separate fixed bounds. Runtime, input and other clients continue between steps;
+catalog mutations and further upload chunks return `invalid_state`. Application
+switching remains allowed; restart requirements are decided at publication.
+
+Owner disconnect before publication cancels validation, closes files and preserves
+staging/metadata for resume. Once publication starts, its four stages (proof check,
+rollback reference, object move, atomic ref replacement) finish even without the
+session; an undelivered reply is discarded. Reconnecting clients inspect the
+catalog. Flare cancels by disconnecting, which cannot undo durable publication;
+it waits up to 45 seconds and reports completion only after success.
+
+Before publication, garbage collection handles one directory entry or one pair of
+current/previous references per tick, with memory independent of catalog size.
+Only unreferenced content-addressed objects are removed. Objects orphaned by this
+publication are collected at the next install or startup. Permission revocation
+is a separate step; an empty revocation performs no Flash write. New permission_set
+requests are rejected until publication finishes. The old Runtime continues during
+reference writes and survives publication failures. Pre-publication cleanup errors
+reject the commit without changing the active version.
+
+`PreparedInstall` binds proof to an open immutable file and PackageManager revision.
+Publication checks the revision, original reference, open-file version and staging
+object identity. Windows read handles deny writes and permit transfer into
+content-addressed storage; POSIX also compares inode/device. Storage has one owner;
+external changes must invalidate proof. LittleFS lacks complete host file IDs, so
+Core/hardware adapters prohibit concurrent staging writes.
+
+Runtime adopts the same verified open file without a second full SHA-256 pass.
+Permissions are never cached. Factory/current packages use resumable validators.
+Firmware sets `Platform::require_factory=true`; standalone simulation may omit a
+factory directory. An available but corrupt factory catalog is never ignored.
+
+Each publication stage returns control to the owner. Individual atomic filesystem
+operations/durable writes and rare rollback/recovery paths remain synchronous;
+install_publish_* counters measure publication stages separately. A byte quantum is not a strict
+wall-clock guarantee on slow or failed media. Board stress validation is required.
+
+## Memory budgets and launch
+
+`Platform::memory` defines stable package admissibility. Do not populate it with current free heap: temporary memory pressure must not hide an installed package or trigger rollback. Optional `available_memory` is checked by Runtime at launch only, separately for internal RAM and PSRAM. Failure returns `resource_exhausted`, preserving the catalog and the previous app until ownership transfer. A verified installed update is not rolled back solely because activation runs out of memory; Core attempts the factory clock and records the launch error.
+
+The Lua heap still cannot exceed `declared internal - 16 KiB`. The declaration additionally reserves estimated native manifest/component allocations, `LuaApp::Impl` (including published values), and Lua source at the loading peak. The Lua heap is reduced when necessary; its 16 KiB minimum remains. An older package whose actual native peak exceeds its declaration may now fail launch; package format and ContractRevision remain unchanged. Impl allocation failure is explicit, and failed launch releases the file and resources even before lifecycle.create.
+
+Diagnostics distinguish `runtime_resident_bytes` (fixed Runtime, including ResourceManager and its buffers, already included in the platform baseline), native heap/peak estimates, and Lua used/peak. STL capacity estimates exclude allocator headers, fragmentation, stack, validation/scene bindings and hardware queues. The adapter must measure the full peak and largest free block; estimates do not guarantee total RAM.
+
+## Time checkpoints and repeated validation
+
+`scene()` never writes `epoch`. The Core owner saves it in `tick()` every 60 seconds; `nextWake()` accounts for the checkpoint independently of frame rate. Successful `time_set` persists immediately and schedules the next checkpoint 60 seconds later. Storage failure preserves the running clock in RAM; `epoch_write_errors` and `epoch_checkpoint_disabled` expose the problem. Automatic retries stop after three failures (60 then 120 second delays) until a successful `time_set` or reboot. `epoch_durable_writes` counts successful writes by the current Core.
+
+During successful operation, persisted time trails by less than one checkpoint interval. Powered-off duration is unknown without RTC or synchronization; storage errors invalidate that interval guarantee. Decimal epoch and other persistent formats are unchanged; no migration is required.
+
+Source inspection of revision 3275a64 shows three complete candidate reads during commit: transfer SHA, Core inspect and PackageManager inspect. Both digests now share one body pass; index validation adds its own reads. The large-package test checks the exact byte count. Prepared installation passes the same open file to Runtime. Ordinary `Core::launch` and `package_read` use call-scoped `locate(..., File&, Package&)` to retain the validated open file until handoff/read without a second SHA. Runtime checks the file for changes before handoff. Catalog and permissions are not cached; a later call validates again. Factory lookup and role-activation fallback may still validate other packages repeatedly; there is no global cache.
+
+Adapters for filesystems that prohibit renaming an open file set `Platform::rename_open_files=false`. PackageManager validates staging identity and revision, closes both read handles, renames, then reopens the moved object and checks size/content mtime before publishing the ref. This requires exclusive filesystem ownership and runs entirely on the Core owner; external writers are forbidden. Rename may change ctime, so it is not compared afterward. Package still references the same File; no SHA pass is repeated. Rename/reopen failure leaves the current ref unpublished and recovery retains the old package. ESP LittleFS enables this mode; Windows/POSIX retain the open handle by default. Host async-install tests exercise both path families through separate Core/PackageManager fixtures.
+
+After validating the bounded header, the frame parser reserves the complete frame size. This avoids geometric byte-vector growth to 8192 bytes for a 4116-byte frame; `bufferCapacity()` is available to adapter diagnostics. `reset()` clears session data while retaining bounded capacity for reuse. Regression tests cover byte-at-a-time input and ten maximum frames. `last_ble_policy_error` separately retains hardware preflight failure when restoring or changing policy; a radio failure does not block local Runtime or USB.
+
+Clock bindings use `gmtime_r` and numeric `snprintf` for the existing `HH:MM` and `DD.MM.YYYY`, avoiding the general `strftime` formatter and its timezone-parser dependencies. Tests cover UTC offsets −12..+14, day/year rollover and February 29. Seconds display was neither added nor removed.

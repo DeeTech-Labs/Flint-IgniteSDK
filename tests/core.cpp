@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <filesystem>
 #include <flint/core.h>
 #include <fstream>
 #include <iostream>
@@ -47,9 +48,19 @@ int main(int argc, char **argv) {
     CHECK(argc == 2);
     std::string root = argv[1];
     uint64_t tick = 1000;
+    bool lowMemory = false;
     Platform platform;
+    platform.available_memory = [&] { return lowMemory ? MemoryBudget{} : platform.memory; };
     platform.build_id = "host-tests";
     platform.monotonic = [&] { return tick; };
+    uint64_t profileClock = 0;
+    platform.microseconds = [&] { return profileClock += 10; };
+    platform.diagnostics = [] {
+        Values values;
+        for (unsigned i = 0; i < 128; ++i)
+            values["zz_adapter_" + std::to_string(i)] = std::string(192, 'x');
+        return values;
+    };
     platform.free_storage = [] { return uint64_t(2 * 1024 * 1024); };
     platform.capabilities |= CapResources;
     Core core(root + "/store", root + "/factory", platform);
@@ -80,6 +91,8 @@ int main(int argc, char **argv) {
     session.authenticated = false;
     CHECK(request(Method::info) == Error::permission_denied);
     CHECK(request(Method::diagnostics) == Error::permission_denied);
+    CHECK(request(Method::companion_subscribe) == Error::permission_denied);
+    CHECK(request(Method::session_close) == Error::permission_denied);
     session.authenticated = true;
     Bytes info;
     CHECK(request(Method::info, {}, &info) == Error::ok);
@@ -120,7 +133,7 @@ int main(int argc, char **argv) {
     CHECK(core.tick());
     CHECK(!core.tick());
     core.disconnect(session);
-    CHECK(core.tick());
+    CHECK(!core.tick()); // A control-only disconnect does not dirty the local runtime.
     session = {true, false, 8};
     CHECK(hello(ContractRevision) == Error::ok);
     CHECK(begin(v1) == 100);
@@ -128,6 +141,13 @@ int main(int argc, char **argv) {
     CHECK(chunk(v1, 100, v1.size() - 100) == Error::ok);
     CHECK(request(Method::install_commit) == Error::ok);
     CHECK(core.packages().list().size() == 7);
+    lowMemory = true;
+    CHECK(core.launch("test.monitor", "main") == Error::resource_exhausted);
+    CHECK(core.runtime().manifest().id == "system.clock");
+    CHECK(core.packages().list().size() == 7);
+    CHECK(core.packages().begin() == Error::ok);
+    CHECK(core.packages().list().size() == 7);
+    lowMemory = false;
     CHECK(core.launch("test.monitor", "main") == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU") == std::string::npos);
@@ -149,6 +169,92 @@ int main(int argc, char **argv) {
     CHECK(request(Method::metrics, metrics.data) == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
+    // Demand snapshots are unsolicited, bounded and coalesced across lifecycle changes.
+    Writer subscribe;
+    subscribe.n(CompanionDemandVersion, 2);
+    subscribe.n(1, 1);
+    CHECK(request(Method::companion_subscribe, subscribe.data) == Error::ok);
+    CHECK(request(Method::companion_subscribe, subscribe.data) == Error::ok);
+    Frame event;
+    CHECK(core.takeCompanionEvent(session, event));
+    CHECK(isCompanionEvent(event) && event.payload.size() <= 64);
+    Reader demandReader{event.payload};
+    CHECK(demandReader.n(2) == CompanionDemandVersion && demandReader.n(1) == 1);
+    const auto demandGeneration = demandReader.n(8);
+    CHECK(demandReader.n(1) == uint8_t(CompanionDemand::active));
+    CHECK(!core.takeCompanionEvent(session, event));
+    Writer binding;
+    binding.n(CompanionDemandVersion, 2);
+    binding.n(1, 1);
+    binding.n(demandGeneration, 8);
+    CHECK(request(Method::companion_bind, binding.data) == Error::ok);
+    Writer sample;
+    sample.raw(binding.data);
+    sample.raw(metrics.data);
+    tick += 1000;
+    CHECK(request(Method::companion_sample, sample.data) == Error::ok);
+    CHECK(request(Method::companion_sample, sample.data) == Error::quota_exceeded);
+    Session outsider{true, true, 111};
+    auto denied = core.handle({Method::companion_sample, 1, false, sample.data}, outsider);
+    CHECK(u16(denied.payload.data()) == uint16_t(Error::permission_denied));
+    for (uint64_t id = 20; id < 24; ++id) {
+        Session peer{true, true, id};
+        auto result = core.handle({Method::companion_subscribe, 1, false, subscribe.data}, peer);
+        CHECK(u16(result.payload.data()) == uint16_t(id == 23 ? Error::quota_exceeded : Error::ok));
+    }
+    for (uint64_t id = 20; id < 24; ++id) {
+        Session peer{true, true, id};
+        core.disconnect(peer);
+    }
+    // Device Control sessions do not own another session's provider data/events.
+    Session control{true, true, 99};
+    core.disconnect(control);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
+    CHECK(core.runtime().suspend() == Error::ok);
+    CHECK(core.runtime().resume() == Error::ok);
+    auto stale = request(Method::companion_sample, sample.data);
+    CHECK(stale == Error::stale_handle);
+    tick += 100;
+    CHECK(core.takeCompanionEvent(session, event));
+    CHECK(!core.takeCompanionEvent(session, event));
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU") == std::string::npos);
+    CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    tick += 10000;
+    core.tick();
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU") == std::string::npos);
+    // A silent provider loses its lease even if it never submitted a sample.
+    Session replacement{true, true, 223};
+    auto subscribed =
+        core.handle({Method::companion_subscribe, 1, false, subscribe.data}, replacement);
+    CHECK(u16(subscribed.payload.data()) == 0);
+    CHECK(core.takeCompanionEvent(replacement, event));
+    Reader state{event.payload};
+    state.n(2);
+    state.n(1);
+    Writer takeover;
+    takeover.n(CompanionDemandVersion, 2);
+    takeover.n(1, 1);
+    takeover.n(state.n(8), 8);
+    auto boundReply = core.handle({Method::companion_bind, 2, false, takeover.data}, replacement);
+    CHECK(u16(boundReply.payload.data()) == 0);
+    CHECK(request(Method::metrics, metrics.data) == Error::invalid_state);
+    tick += CompanionTtlMs;
+    core.tick();
+    CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    const auto closed = core.handle({Method::session_close, 3, false, {}}, replacement);
+    CHECK(u16(closed.payload.data()) == 0 && !replacement.compatible);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
+    core.disconnect(session);
+    CHECK(core.runtime().state() == State::active);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU") == std::string::npos);
+    CHECK(hello(ContractRevision) == Error::ok);
+    CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    CHECK(core.scene(scene) == Error::ok);
     allocations = 0;
     trackAllocations = true;
     for (unsigned frame = 0; frame < 10; ++frame)
@@ -267,6 +373,19 @@ int main(int argc, char **argv) {
     parser.feed(corrupt, receive);
     parser.feed(wire, receive);
     CHECK(frames == 2);
+    Frame maximum{Method::info, 42, false, Bytes(MaxPayload, 0)};
+    const auto maximumWire = encodeFrame(maximum);
+    FrameParser maximumParser;
+    unsigned maximumFrames = 0;
+    for (unsigned cycle = 0; cycle < 10; ++cycle)
+        for (const auto byte : maximumWire)
+            maximumParser.feed({&byte, 1}, [&](Frame f) {
+                CHECK(f.payload.size() == MaxPayload);
+                ++maximumFrames;
+            });
+    CHECK(maximumFrames == 10 && maximumParser.bufferCapacity() <= MaxPayload + 20);
+    maximumParser.reset();
+    CHECK(maximumParser.bufferCapacity() <= MaxPayload + 20);
     EventBus bus;
     for (int i = 0; i < 32; ++i)
         CHECK(bus.post({uint32_t(i)}) == Error::ok);
@@ -277,6 +396,148 @@ int main(int argc, char **argv) {
         CHECK(e.type == unsigned(i));
     }
     CHECK(!bus.poll(e));
+    CHECK(bus.peak() == 32 && bus.overflows() == 1);
+    bus.clear();
+    CHECK(bus.empty() && bus.peak() == 32 && bus.overflows() == 1);
+    Bytes diagnosticBytes;
+    CHECK(request(Method::diagnostics, {}, &diagnosticBytes) == Error::ok);
+    Reader diagnosticReader{diagnosticBytes};
+    Values counters;
+    const auto diagnosticCount = diagnosticReader.n(2);
+    for (unsigned i = 0; i < diagnosticCount; ++i) {
+        const auto key = diagnosticReader.text(80);
+        counters[key] = diagnosticReader.text(192);
+    }
+    CHECK(diagnosticReader.done());
+    CHECK(diagnosticBytes.size() + 2 <= MaxPayload);
+    CHECK(counters.at("diagnostics_truncated") == "1");
+    CHECK(std::stoull(counters.at("request_count")) > 0);
+    CHECK(std::stoull(counters.at("request_max_us")) >= 10);
+    CHECK(std::stoull(counters.at("resource_read_bytes")) >= header.size());
+    CHECK(std::stoull(counters.at("resource_read_errors")) > 0);
+    // Scene preparation never writes epoch; retries are bounded and explicitly recoverable.
+    Platform clockPlatform = platform;
+    uint64_t clock = 0;
+    clockPlatform.monotonic = [&] { return clock; };
+    clockPlatform.diagnostics = {};
+    Core checkpoint(root + "/checkpoint-store", root + "/factory", clockPlatform);
+    CHECK(checkpoint.begin() == Error::ok);
+    Session clockSession{true, true, 1000};
+    CHECK(u16(checkpoint.handle({Method::time_set, 1, false, epoch.data}, clockSession)
+                  .payload.data()) == 0);
+    const auto epochPath = root + "/checkpoint-store/epoch";
+    const auto persisted = readText(epochPath);
+    std::filesystem::create_directory(epochPath + ".tmp");
+    const auto snapshot = [&] {
+        const auto reply = checkpoint.handle({Method::diagnostics, 2, false, {}}, clockSession);
+        Reader fields{reply.payload};
+        fields.n(2);
+        Values result;
+        const auto count = fields.n(2);
+        for (unsigned i = 0; i < count; ++i) {
+            auto key = fields.text(80);
+            result[key] = fields.text(192);
+        }
+        CHECK(fields.done());
+        return result;
+    };
+    clock = 60000;
+    for (unsigned i = 0; i < 10; ++i)
+        CHECK(checkpoint.scene(scene) == Error::ok);
+    CHECK(readText(epochPath) == persisted);
+    CHECK(snapshot().at("epoch_write_errors") == "0");
+    for (const auto at : {60000, 120000, 240000}) {
+        clock = at;
+        checkpoint.tick();
+    }
+    CHECK(snapshot().at("epoch_write_errors") == "3");
+    CHECK(snapshot().at("epoch_checkpoint_disabled") == "1");
+    clock += 3600000;
+    checkpoint.tick();
+    CHECK(snapshot().at("epoch_write_errors") == "3");
+    std::filesystem::remove(epochPath + ".tmp");
+    CHECK(u16(checkpoint.handle({Method::time_set, 3, false, epoch.data}, clockSession)
+                  .payload.data()) == 0);
+    checkpoint.tick();
+    CHECK(snapshot().at("epoch_durable_writes") == "2");
+    clock += 60000;
+    checkpoint.tick();
+    CHECK(snapshot().at("epoch_durable_writes") == "3");
+    CHECK(readText(epochPath) == std::to_string(1793740060));
+    // Radio policy is persistent, separate from Companion, and applied only after durable success.
+    Platform radioPlatform = platform;
+    radioPlatform.capabilities |= CapBlePolicy;
+    bool radioEnabled = false, rejectRadio = false;
+    unsigned radioChanges = 0;
+    radioPlatform.ble_check = [&](bool enabled) {
+        return enabled && rejectRadio ? Error::resource_exhausted : Error::ok;
+    };
+    radioPlatform.ble_apply = [&](bool enabled) {
+        radioEnabled = enabled;
+        ++radioChanges;
+    };
+    const auto radioRoot = root + "/radio-store";
+    Core radio(radioRoot, root + "/factory", radioPlatform);
+    CHECK(radio.begin() == Error::ok && radioEnabled && radioChanges == 1);
+    Session radioSession{true, true, 1001};
+    const auto setRadio = [&](std::string_view value) {
+        Writer setting;
+        setting.text("ble_enabled");
+        setting.text(value);
+        const auto reply =
+            radio.handle({Method::settings_set, 1, false, setting.data}, radioSession);
+        return Error(u16(reply.payload.data()));
+    };
+    CHECK(setRadio("false") == Error::invalid_argument && radioChanges == 1);
+    std::filesystem::create_directory(radioRoot + "/settings.bin.tmp");
+    CHECK(setRadio("0") == Error::io_error && radioEnabled && radioChanges == 1);
+    std::filesystem::remove(radioRoot + "/settings.bin.tmp");
+    CHECK(setRadio("0") == Error::ok && !radioEnabled && radioChanges == 2);
+    rejectRadio = true;
+    CHECK(setRadio("1") == Error::resource_exhausted && !radioEnabled && radioChanges == 2);
+    const auto radioDiagnostic = radio.handle({Method::diagnostics, 4, false, {}}, radioSession);
+    Reader radioFields{radioDiagnostic.payload};
+    CHECK(radioFields.n(2) == 0);
+    const auto radioCount = radioFields.n(2);
+    bool recordedRadioError = false;
+    for (unsigned i = 0; i < radioCount; ++i) {
+        const auto key = radioFields.text(80), value = radioFields.text(192);
+        if (key == "last_ble_policy_error")
+            recordedRadioError = value == "10";
+    }
+    CHECK(radioFields.done() && recordedRadioError);
+    Core radioRestart(radioRoot, root + "/factory", radioPlatform);
+    CHECK(radioRestart.begin() == Error::ok && !radioEnabled && radioChanges == 3);
+    CHECK(radioRestart.runtime().manifest().id == "system.clock");
+    rejectRadio = false;
+    CHECK(setRadio("1") == Error::ok && radioEnabled);
+    // Fixed numeric formatting preserves UTC offsets and calendar transitions.
+    Core calendar(root + "/calendar-store", root + "/factory", platform);
+    CHECK(calendar.begin() == Error::ok);
+    Session calendarSession{true, true, 1002};
+    struct CalendarCase {
+        uint64_t epoch;
+        const char *offset, *time, *date;
+    };
+    for (const auto &test : {CalendarCase{1700000000, "0", "22:13", "14.11.2023"},
+             CalendarCase{1700000000, "840", "12:13", "15.11.2023"},
+             CalendarCase{1700000000, "-720", "10:13", "14.11.2023"},
+             CalendarCase{1709251140, "0", "23:59", "29.02.2024"},
+             CalendarCase{1709251140, "60", "00:59", "01.03.2024"},
+             CalendarCase{1735689540, "60", "00:59", "01.01.2025"}}) {
+        Writer offset;
+        offset.text("utc_offset");
+        offset.text(test.offset);
+        CHECK(u16(calendar.handle({Method::settings_set, 1, false, offset.data}, calendarSession)
+                      .payload.data()) == 0);
+        Writer value;
+        value.n(test.epoch, 8);
+        CHECK(u16(calendar.handle({Method::time_set, 2, false, value.data}, calendarSession)
+                      .payload.data()) == 0);
+        CHECK(calendar.scene(scene) == Error::ok);
+        CHECK(text(scene).find(test.time) != std::string::npos &&
+            text(scene).find(test.date) != std::string::npos);
+    }
     std::cout << "Core installation/resume/update/rollback, consent/revocation, factory "
                  "protection, external resources, lifecycle and binary framing: passed\n";
 }

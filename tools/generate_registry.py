@@ -19,6 +19,10 @@ def validate_services(services):
             raise ValueError(f"duplicate service ID or name: {ident!r}, {name!r}")
         if type(service["mutates"]) is not bool:
             raise ValueError(f"mutates must be boolean: {name}")
+        if service.get("direction", "request") not in ("request", "event"):
+            raise ValueError(f"invalid direction: {name}")
+        if service.get("direction") == "event" and service["mutates"]:
+            raise ValueError(f"event cannot be a mutating request: {name}")
         ids.add(ident)
         names.add(name)
 

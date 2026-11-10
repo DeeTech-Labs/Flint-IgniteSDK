@@ -34,11 +34,19 @@ Error ResourceManager::find(uint32_t id, Entry &out) const {
     return error;
 }
 Error ResourceManager::read(ResourceHandle handle, uint32_t offset, std::span<uint8_t> bytes) {
-    if (handle.generation != generation_)
+    TimingScope timing(clock_, readTiming_);
+    if (handle.generation != generation_) {
+        ++readErrors_;
         return Error::stale_handle;
+    }
     Package::View section;
     const auto error = view(handle.section, section);
-    return error == Error::ok ? section.read(offset, bytes) : error;
+    const auto result = error == Error::ok ? section.read(offset, bytes) : error;
+    if (result == Error::ok)
+        readBytes_ += bytes.size();
+    else
+        ++readErrors_;
+    return result;
 }
 ResourceManager::GlyphInfo ResourceManager::lookup(unsigned font, uint32_t cp) {
     for (const auto &cached : metrics_)

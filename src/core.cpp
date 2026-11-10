@@ -1,4 +1,6 @@
+#include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <flint/core.h>
 #include <flint/os.h>
@@ -47,13 +49,16 @@ static uint64_t generation(const Installed &p) {
 }
 Core::Core(std::string root, std::string factory, Platform platform)
     : platform_(std::move(platform)),
-      packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities) {
+      packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities,
+          platform_.require_factory, platform_.rename_open_files) {
     runtime_.host({this,
         [](void *context, AppService service, std::string_view key, std::string_view value,
             AppReply &reply) {
             return static_cast<Core *>(context)->appCall(service, key, value, reply);
         },
         [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); }, true});
+    runtime_.resources().profilingClock(platform_.microseconds);
+    runtime_.availableMemory(platform_.available_memory);
 }
 Error Core::appCall(
     AppService service, std::string_view key, std::string_view value, AppReply &reply) {
@@ -105,16 +110,18 @@ Error Core::appCall(
 }
 uint64_t Core::nextWake() const {
     const auto at = platform_.monotonic();
-    if (!events_.empty())
+    if (install_ || !events_.empty())
         return at;
-    auto next = runtime_.nextWake();
+    auto next = std::min(runtime_.nextWake(), nextEpochSave_);
+    if (boundProvider_ && boundAt_ <= UINT64_MAX - CompanionTtlMs)
+        next = std::min(next, boundAt_ + CompanionTtlMs);
     if (epoch_ && at >= base_) {
         const auto minuteDelay = (60 - now() % 60) * 1000 - (at - base_) % 1000;
         if (minuteDelay <= UINT64_MAX - at)
             next = std::min(next, at + minuteDelay);
     }
-    if (haveMetrics_ && metricAt_ <= UINT64_MAX - 10000)
-        next = std::min(next, metricAt_ + 10000);
+    if (companion_.valid && companion_.at <= UINT64_MAX - 10000)
+        next = std::min(next, companion_.at + 10000);
     return next;
 }
 Error Core::persistSettings() {
@@ -142,19 +149,21 @@ Error Core::persistGrants() {
 }
 Error Core::revokePackage(std::string_view id) {
     const auto previous = grants_;
+    bool changed = false;
     for (auto &grant : grants_) {
-        if (grant.package == id) {
+        if (grant.package == id && grant.enabled) {
             grant.enabled = false;
+            changed = true;
         }
     }
-    const auto result = persistGrants();
+    const auto result = changed ? persistGrants() : Error::ok;
     if (result != Error::ok) {
         grants_ = previous;
     }
-    haveMetrics_ = false;
+    companion_.valid = false;
     return result;
 }
-void Core::refreshProviders(std::string_view id, bool removed) {
+void Core::refreshProviders(std::string_view id, bool removed, PreparedInstall *prepared) {
     bindingsDirty_ = true;
     for (const auto role : {Role::theme, Role::locale}) {
         const auto key = "role" + std::to_string(unsigned(role));
@@ -165,6 +174,18 @@ void Core::refreshProviders(std::string_view id, bool removed) {
         if (removed) {
             settings_.erase(key);
             persistSettings();
+        }
+        if (!removed && prepared) {
+            bool loaded = false;
+            const auto componentId = std::string_view(selected->second).substr(id.size() + 1);
+            for (const auto &component : prepared->manifest().components)
+                if (component.id == componentId) {
+                    auto &values = role == Role::theme ? theme_ : locale_;
+                    loaded = loadValues(prepared->package(), component, values) == Error::ok;
+                    break;
+                }
+            if (loaded)
+                continue;
         }
         activateRole(role);
     }
@@ -178,6 +199,15 @@ Error Core::begin() {
     if (!settings_.contains("utc_offset")) {
         settings_["utc_offset"] = "180";
     }
+    if ((platform_.capabilities & CapBlePolicy) && platform_.ble_check && platform_.ble_apply) {
+        if (settings_["ble_enabled"] != "0")
+            settings_["ble_enabled"] = "1";
+        const bool enabled = settings_["ble_enabled"] != "0";
+        // A radio failure must not prevent autonomous local startup or USB recovery.
+        lastBlePolicyError_ = platform_.ble_check(enabled);
+        if (lastBlePolicyError_ == Error::ok)
+            platform_.ble_apply(enabled);
+    }
     auto epoch = readText(packages_.root() + "/epoch", 24);
     if (!epoch.empty()) {
         char *tail{};
@@ -185,6 +215,8 @@ Error Core::begin() {
         if (tail && !*tail && value >= 1700000000 && value <= 4102444800ULL)
             epoch_ = value;
     }
+    if (epoch_ && base_ <= UINT64_MAX - 60000)
+        nextEpochSave_ = base_ + 60000;
     auto data = readText(packages_.root() + "/grants.bin", 16384);
     Reader r{{reinterpret_cast<const uint8_t *>(data.data()), data.size()}};
     auto count = r.n(2);
@@ -261,10 +293,13 @@ Error Core::activateRole(Role role, std::string_view selection) {
 
 Error Core::launch(std::string_view id, std::string_view component) {
     Installed p;
-    auto error = packages_.locate(id, p);
+    File file;
+    Package package;
+    auto error = packages_.locate(id, p, file, package);
     if (error != Error::ok)
         return error;
-    auto result = runtime_.launch(p, component, platform_.memory, platform_.capabilities);
+    auto result = runtime_.launchValidated(
+        file, package, std::move(p.manifest), component, platform_.memory, platform_.capabilities);
     if (result != Error::ok) {
         lastLogicError_ = result;
         lastDiagnostic_ = runtime_.diagnostic();
@@ -281,12 +316,12 @@ Error Core::launch(std::string_view id, std::string_view component) {
         }
     }
     if (result == Error::ok) {
-        haveMetrics_ = false;
+        companion_.valid = false;
         events_.post({3, 0, runtime_.generation()});
     }
     return result;
 }
-bool Core::canReceiveMetrics() {
+bool Core::canReceiveMetrics(uint64_t providerSession) {
     const auto &m = runtime_.manifest();
     bool declared = false;
     for (auto &d : m.permissions)
@@ -309,8 +344,8 @@ bool Core::canReceiveMetrics() {
     }
     if (!metricIdentityValid_ || runtime_.state() != State::active)
         return false;
-    Call call{metricPrincipal_, "cpu,ram", platform_.monotonic(), 0, 0, platform_.capabilities,
-        true, true, metricFactory_};
+    Call call{metricPrincipal_, "cpu,ram", platform_.monotonic(), providerSession, 0,
+        platform_.capabilities, true, true, metricFactory_};
     // Recheck live grants without allocating a temporary collection or caching a decision.
     const auto &spec = *permission("companion.pc.metrics");
     for (const auto &g : grants_) {
@@ -323,7 +358,187 @@ bool Core::canReceiveMetrics() {
     }
     return false;
 }
+void Core::refreshCompanionDemand() {
+    const auto at = platform_.monotonic();
+    if (boundProvider_ && (at < boundAt_ || at - boundAt_ >= CompanionTtlMs)) {
+        boundProvider_ = boundGeneration_ = 0;
+        sampleReceived_ = false;
+        companion_.valid = false;
+        bindingsDirty_ = true;
+        ++demandGeneration_;
+        events_.post({2, 0, runtime_.generation()});
+    }
+    bool declared = false;
+    if (runtime_.state() == State::active)
+        for (const auto &permission : runtime_.manifest().permissions)
+            declared |=
+                permission.permission == "companion.pc.metrics" && permission.scope == "cpu,ram";
+    const auto state = !declared ? CompanionDemand::no_consumer
+        : canReceiveMetrics()    ? CompanionDemand::active
+                                 : CompanionDemand::permission_denied;
+    if (demandRuntime_ == runtime_.consumerGeneration() && demandCatalog_ == packages_.revision() &&
+        demand_ == state)
+        return;
+    demandRuntime_ = runtime_.consumerGeneration();
+    demandCatalog_ = packages_.revision();
+    demand_ = state;
+    ++demandGeneration_;
+    boundProvider_ = boundGeneration_ = 0;
+    sampleReceived_ = false;
+    if (companion_.valid) {
+        companion_.valid = false;
+        bindingsDirty_ = true;
+        events_.post({2, 0, runtime_.generation()});
+    }
+}
+uint64_t Core::companionNextWake(const Session &session) {
+    refreshCompanionDemand();
+    if (!session.id || !session.authenticated || !session.compatible)
+        return UINT64_MAX;
+    for (const auto &subscriber : companionSubscribers_)
+        if (subscriber.session == session.id && subscriber.sentGeneration != demandGeneration_)
+            return subscriber.sent && subscriber.sentAt <= UINT64_MAX - 100
+                ? subscriber.sentAt + 100
+                : platform_.monotonic();
+    return UINT64_MAX;
+}
+bool Core::takeCompanionEvent(const Session &session, Frame &event) {
+    refreshCompanionDemand();
+    if (!session.id || !session.authenticated || !session.compatible)
+        return false;
+    for (auto &subscriber : companionSubscribers_) {
+        if (subscriber.session != session.id || subscriber.sentGeneration == demandGeneration_)
+            continue;
+        const auto at = platform_.monotonic();
+        if (subscriber.sent && (at < subscriber.sentAt || at - subscriber.sentAt < 100))
+            return false;
+        Writer payload;
+        payload.n(CompanionDemandVersion, 2);
+        payload.n(1, 1);
+        payload.n(demandGeneration_, 8);
+        payload.n(uint8_t(demand_), 1);
+        payload.n(runtime_.consumerGeneration(), 8);
+        payload.n(CompanionSampleIntervalMs);
+        payload.n(CompanionTtlMs);
+        event = {Method::companion_state, 0, false, std::move(payload.data)};
+        subscriber.sent = true;
+        subscriber.sentGeneration = demandGeneration_;
+        subscriber.sentAt = at;
+        return true;
+    }
+    return false;
+}
+Error Core::handleCompanion(Method method, Reader &in, Session &session) {
+    if (!(platform_.capabilities & CapCompanionDemand))
+        return Error::not_supported;
+    if (!session.id)
+        return Error::permission_denied;
+    const auto version = in.n(2);
+    const auto kind = in.n(1);
+    if (!in.valid || version != CompanionDemandVersion)
+        return Error::invalid_argument;
+    auto subscriber = std::find_if(companionSubscribers_.begin(), companionSubscribers_.end(),
+        [&](const auto &item) { return item.session == session.id; });
+    if (method == Method::companion_subscribe) {
+        if (!in.done() || kind > 1)
+            return Error::invalid_argument;
+        if (!kind) {
+            if (subscriber != companionSubscribers_.end())
+                *subscriber = {};
+            if (boundProvider_ == session.id) {
+                boundProvider_ = boundGeneration_ = 0;
+                ++demandGeneration_;
+                sampleReceived_ = false;
+                if (companion_.providerSession == session.id) {
+                    companion_.valid = false;
+                    bindingsDirty_ = true;
+                    events_.post({2, 0, runtime_.generation()});
+                }
+            }
+            return Error::ok;
+        }
+        if (subscriber == companionSubscribers_.end())
+            subscriber = std::find_if(companionSubscribers_.begin(), companionSubscribers_.end(),
+                [](const auto &item) { return !item.session; });
+        if (subscriber == companionSubscribers_.end())
+            return Error::quota_exceeded;
+        *subscriber = {session.id, 0, 0, false};
+        return Error::ok;
+    }
+    const auto generation = in.n(8);
+    if (!in.valid || kind != 1 || (method == Method::companion_bind && !in.done()))
+        return Error::invalid_argument;
+    if (subscriber == companionSubscribers_.end())
+        return Error::permission_denied;
+    if (generation != demandGeneration_)
+        return Error::stale_handle;
+    if (demand_ != CompanionDemand::active || !canReceiveMetrics(session.id))
+        return Error::permission_denied;
+    if (boundProvider_ && boundProvider_ != session.id)
+        return Error::invalid_state;
+    if (method == Method::companion_bind) {
+        if (!boundProvider_ || boundGeneration_ != generation)
+            boundAt_ = platform_.monotonic();
+        boundProvider_ = session.id;
+        boundGeneration_ = generation;
+        return Error::ok;
+    }
+    if (boundProvider_ != session.id || boundGeneration_ != generation)
+        return Error::invalid_state;
+    const auto at = platform_.monotonic();
+    if (sampleReceived_ && (at < sampleAt_ || at - sampleAt_ < 1000))
+        return Error::quota_exceeded;
+    const auto error = receiveMetrics(in, session);
+    if (error == Error::ok) {
+        sampleReceived_ = true;
+        sampleAt_ = at;
+    }
+    return error;
+}
+Error Core::receiveMetrics(Reader &in, const Session &session) {
+    if (boundProvider_ && boundProvider_ != session.id)
+        return Error::invalid_state;
+    if (!session.id || !canReceiveMetrics(session.id))
+        return Error::permission_denied;
+    const auto cpu = in.n(), ram = in.n();
+    if (!in.done() || cpu > 10000 || ram > 10000)
+        return Error::invalid_argument;
+    const auto at = platform_.monotonic();
+    if (sampleReceived_ && (at < sampleAt_ || at - sampleAt_ < 1000))
+        return Error::quota_exceeded;
+    companion_ = {cpu / 100.0, ram / 100.0, at, session.id, runtime_.consumerGeneration(), true};
+    boundProvider_ = session.id;
+    boundAt_ = at;
+    sampleReceived_ = true;
+    sampleAt_ = at;
+    return Error::ok;
+}
+void Core::checkpointEpoch() {
+    const auto at = platform_.monotonic();
+    if (!epoch_ || nextEpochSave_ == UINT64_MAX || at < nextEpochSave_)
+        return;
+    const auto text = std::to_string(now());
+    const auto saved = writeAtomic(
+        packages_.root() + "/epoch", {reinterpret_cast<const uint8_t *>(text.data()), text.size()});
+    if (saved) {
+        ++epochWrites_;
+        lastSave_ = at;
+        epochFailures_ = 0;
+    } else {
+        ++epochWriteErrors_;
+        ++epochFailures_;
+    }
+    // Three failures stop automatic writes until an explicit successful time_set or reboot.
+    const uint64_t delay = uint64_t(60000)
+        << std::min<uint32_t>(epochFailures_ ? epochFailures_ - 1 : 0, 2);
+    nextEpochSave_ = epochFailures_ >= 3 || at > UINT64_MAX - delay ? UINT64_MAX : at + delay;
+}
 bool Core::tick() {
+    // Do not stack an unrelated durable checkpoint on an installation I/O step.
+    if (!install_)
+        checkpointEpoch();
+    advanceInstall();
+    refreshCompanionDemand();
     const auto at = platform_.monotonic();
     bool logicDirty = false;
     if (runtime_.scripted() && runtime_.state() == State::active && runtime_.nextWake() <= at) {
@@ -340,7 +555,10 @@ bool Core::tick() {
         std::copy(runtime_.manifest().id.begin(), runtime_.manifest().id.end(), packageId.begin());
         std::copy(
             runtime_.component().id.begin(), runtime_.component().id.end(), componentId.begin());
-        const auto logicError = runtime_.tick(at);
+        const auto logicError = [&] {
+            TimingScope timing(platform_.microseconds, logicTiming_);
+            return runtime_.tick(at);
+        }();
         if (logicError != Error::ok) {
             lastLogicError_ = logicError;
             lastDiagnostic_ = runtime_.diagnostic();
@@ -360,8 +578,11 @@ bool Core::tick() {
         renderedMinute_ = minute;
         events_.post({1, minute, runtime_.generation()});
     }
-    if (haveMetrics_ && platform_.monotonic() - metricAt_ >= 10000) {
-        haveMetrics_ = false;
+    if (companion_.valid &&
+        (companion_.consumerGeneration != runtime_.consumerGeneration() ||
+            !canReceiveMetrics(companion_.providerSession) ||
+            platform_.monotonic() - companion_.at >= 10000)) {
+        companion_.valid = false;
         events_.post({2, 0, runtime_.generation()});
     }
     bool dirty = logicDirty;
@@ -374,8 +595,10 @@ bool Core::tick() {
 }
 const Values &Core::bindings() {
     const auto minute = now() / 60;
-    const bool metrics =
-        haveMetrics_ && platform_.monotonic() - metricAt_ < 10000 && canReceiveMetrics();
+    const bool metrics = companion_.valid &&
+        companion_.consumerGeneration == runtime_.consumerGeneration() &&
+        platform_.monotonic() - companion_.at < 10000 &&
+        canReceiveMetrics(companion_.providerSession);
     if (!bindingsDirty_ && bindingsRuntime_ == runtime_.generation() && bindingsMinute_ == minute &&
         bindingsCatalog_ == packages_.revision() && bindingsMetrics_ == metrics)
         return bindings_;
@@ -399,9 +622,10 @@ const Values &Core::bindings() {
     time_t local = epoch + offset * 60;
     struct tm tm{};
     gmtime_r(&local, &tm);
-    char time[32], date[32];
-    strftime(time, sizeof(time), "%H:%M", &tm);
-    strftime(date, sizeof(date), "%d.%m.%Y", &tm);
+    char time[32], date[40];
+    std::snprintf(time, sizeof(time), "%02d:%02d", tm.tm_hour, tm.tm_min);
+    std::snprintf(
+        date, sizeof(date), "%02d.%02d.%04d", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900);
     values["time.read"] = epoch ? time : "--:--";
     values["time.date"] = epoch ? date : "Sync time in Flare";
     values["system.info"] = std::string(DeviceProfile);
@@ -431,7 +655,7 @@ const Values &Core::bindings() {
         values["packages.list"] = launcher_;
     if (metrics) {
         char b[48];
-        snprintf(b, sizeof(b), "CPU %.1f%%  RAM %.1f%%", cpu_, ram_);
+        snprintf(b, sizeof(b), "CPU %.1f%%  RAM %.1f%%", companion_.cpu, companion_.ram);
         values["companion.pc.metrics"] = b;
     }
     for (auto it = values.begin(); it != values.end();) {
@@ -452,12 +676,7 @@ const Values &Core::bindings() {
     return values;
 }
 Error Core::scene(FlintRender::Scene &scene) {
-    if (now() && platform_.monotonic() - lastSave_ >= 60000) {
-        auto text = std::to_string(now());
-        writeAtomic(packages_.root() + "/epoch",
-            {reinterpret_cast<const uint8_t *>(text.data()), text.size()});
-        lastSave_ = platform_.monotonic();
-    }
+    TimingScope timing(platform_.microseconds, sceneTiming_);
     auto error = runtime_.render(bindings(), scene);
     if (error != Error::ok) {
         const auto failed = runtime_.manifest().id + "/" + runtime_.component().id;
@@ -490,6 +709,7 @@ Error Core::scene(FlintRender::Scene &scene) {
     return Error::ok;
 }
 void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
+    TimingScope timing(platform_.microseconds, paintTiming_);
     FlintRender::resourceContext = &runtime_.resources();
     FlintRender::resourceMetrics = [](void *context, unsigned font, uint32_t cp) {
         return static_cast<ResourceManager *>(context)->metrics(font, cp);
@@ -508,15 +728,170 @@ void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     FlintRender::resourceImage = nullptr;
 }
 void Core::disconnect(Session &session) {
+    if (installOwner_ == session.id) {
+        // Publication owns durable changes; a lost transport only discards its reply.
+        if (!install_ || !install_->publishing())
+            install_.reset();
+        installReply_.reset();
+        installOwner_ = 0;
+    }
     for (auto &g : grants_)
         if (g.session == session.id && g.session)
             g.enabled = false;
     session.compatible = false;
-    haveMetrics_ = false;
-    events_.clear();
-    events_.post({4, 0, runtime_.generation()});
+    for (auto &subscriber : companionSubscribers_)
+        if (subscriber.session == session.id)
+            subscriber = {};
+    if (boundProvider_ == session.id) {
+        boundProvider_ = boundGeneration_ = 0;
+        ++demandGeneration_;
+        sampleReceived_ = false;
+    }
+    if (companion_.valid && companion_.providerSession == session.id) {
+        companion_.valid = false;
+        bindingsDirty_ = true;
+        events_.post({4, 0, runtime_.generation()});
+    }
+}
+static Frame errorReply(const Frame &request, Error error) {
+    Writer payload;
+    payload.n(uint16_t(error), 2);
+    return {request.method, request.id, true, std::move(payload.data)};
+}
+Error Core::beginInstall(const Frame &request, const Session &session) {
+    if (install_ || installReply_)
+        return Error::invalid_state;
+    if (!session.id)
+        return Error::permission_denied;
+    if (!request.payload.empty())
+        return Error::invalid_argument;
+    const auto meta = readText(packages_.staging() + ".meta", 100);
+    const auto separator = meta.find(':');
+    if (separator == std::string::npos)
+        return Error::invalid_state;
+    uint32_t total = 0;
+    const auto parsed = std::from_chars(meta.data(), meta.data() + separator, total);
+    if (parsed.ec != std::errc{} || parsed.ptr != meta.data() + separator || !total ||
+        total > MaxPackageBytes)
+        return Error::invalid_state;
+    const auto error =
+        packages_.prepareCommit(install_, std::string_view(meta).substr(separator + 1), total);
+    if (error != Error::ok)
+        return error;
+    installPermissionsRevoked_ = false;
+    installOwner_ = session.id;
+    installRequest_ = {request.method, request.id, false, {}};
+    return Error::ok;
+}
+void Core::advanceInstall() {
+    if (!install_)
+        return;
+    TimingScope timing(platform_.microseconds, installTiming_);
+    ++installSteps_;
+    auto error = install_->ready() ? Error::ok : install_->advance(4096);
+    if (error == Error::ok && !install_->ready())
+        return;
+    std::string installedId;
+    if (error == Error::ok) {
+        const auto candidateId = install_->manifest().id;
+        if (!installPermissionsRevoked_) {
+            error = revokePackage(candidateId);
+            if (error == Error::ok) {
+                installPermissionsRevoked_ = true;
+                return;
+            }
+        }
+        if (error == Error::ok) {
+            const bool active = runtime_.manifest().id == candidateId;
+            const auto component = runtime_.component().id;
+            bool completed = false;
+            {
+                TimingScope publication(platform_.microseconds, installPublishTiming_);
+                error = packages_.advanceCommit(*install_, installedId, completed);
+            }
+            if (error == Error::ok && !completed)
+                return;
+            if (error == Error::ok) {
+                unlink((packages_.staging() + ".meta").c_str());
+                refreshProviders(installedId, false, install_.get());
+            }
+            if (active && error == Error::ok) {
+                const auto launchError = runtime_.launchPrepared(
+                    *install_, component, platform_.memory, platform_.capabilities);
+                if (launchError != Error::ok) {
+                    lastLogicError_ = launchError;
+                    lastDiagnostic_ = runtime_.diagnostic();
+                    lastLogicPackage_ = candidateId;
+                    lastLogicComponent_ = component;
+                    // Temporary heap pressure never invalidates a verified installed object.
+                    if (launchError != Error::resource_exhausted) {
+                        packages_.rollback(candidateId);
+                        launch(candidateId, component);
+                    } else {
+                        activateRole(Role::clock, "system.clock/main");
+                    }
+                    if (error == Error::ok)
+                        error = launchError;
+                }
+            }
+        }
+    }
+    auto reply = errorReply(installRequest_, error);
+    if (error == Error::ok) {
+        Writer payload;
+        payload.raw(reply.payload);
+        payload.text(installedId);
+        reply.payload = std::move(payload.data);
+        bindingsDirty_ = true;
+        events_.post({4, 0, runtime_.generation()});
+    } else
+        ++requestErrors_;
+    if (installOwner_)
+        installReply_ = std::move(reply);
+    install_.reset();
+    refreshCompanionDemand();
+}
+std::optional<Frame> Core::process(const Frame &request, Session &session) {
+    if (request.method != Method::install_commit)
+        return handle(request, session);
+    TimingScope timing(platform_.microseconds, requestTiming_);
+    ++requests_;
+    Error error = Error::ok;
+    if (request.reply || !request.id || !request.payload.empty())
+        error = Error::invalid_argument;
+    else if (!session.authenticated)
+        error = Error::permission_denied;
+    else if (!session.compatible)
+        error = Error::incompatible_contract;
+    else if ((install_ || installReply_) && installOwner_ == session.id &&
+        installRequest_.id == request.id) {
+        Frame reply;
+        return takeReply(session, reply) ? std::optional<Frame>(std::move(reply)) : std::nullopt;
+    } else
+        error = beginInstall(request, session);
+    if (error == Error::ok)
+        return std::nullopt;
+    ++requestErrors_;
+    return errorReply(request, error);
+}
+bool Core::replyReady(const Session &session) const {
+    return installReply_ && session.id && session.authenticated && session.compatible &&
+        session.id == installOwner_;
+}
+bool Core::takeReply(const Session &session, Frame &reply) {
+    if (!replyReady(session))
+        return false;
+    reply = std::move(*installReply_);
+    installReply_.reset();
+    installOwner_ = 0;
+    return true;
 }
 Frame Core::handle(const Frame &request, Session &session) {
+    refreshCompanionDemand();
+    TimingScope timing(platform_.microseconds, requestTiming_);
+    ++requests_;
+    if (request.method == Method::metrics || request.method == Method::companion_sample)
+        ++metricRequests_;
     Frame reply{request.method, request.id, true, {}};
     Writer out;
     Reader in{request.payload};
@@ -546,17 +921,69 @@ Frame Core::handle(const Frame &request, Session &session) {
         fail(Error::permission_denied);
     else if (!session.compatible)
         fail(Error::incompatible_contract);
+    else if (install_ &&
+        (request.method == Method::install_begin || request.method == Method::install_chunk ||
+            request.method == Method::install_commit || request.method == Method::remove ||
+            request.method == Method::rollback || request.method == Method::recover ||
+            (installPermissionsRevoked_ && request.method == Method::permission_set)))
+        fail(Error::invalid_state);
     else
         switch (request.method) {
+        case Method::session_close:
+            if (!(platform_.capabilities & CapSessionClose))
+                error = Error::not_supported;
+            else if (!in.done())
+                error = Error::invalid_argument;
+            else
+                disconnect(session);
+            break;
+        case Method::companion_subscribe:
+        case Method::companion_bind:
+        case Method::companion_sample:
+            error = handleCompanion(request.method, in, session);
+            break;
         case Method::diagnostics: {
             if (!in.done()) {
                 fail(Error::invalid_argument);
                 break;
             }
             auto values = platform_.diagnostics ? platform_.diagnostics() : Values{};
+            values["last_ble_policy_error"] = std::to_string(uint16_t(lastBlePolicyError_));
             values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
+            values["runtime_resident_bytes"] = std::to_string(sizeof(Runtime));
+            values["runtime_native_heap_estimate"] = std::to_string(runtime_.nativeHeapEstimate());
+            values["runtime_native_peak_estimate"] = std::to_string(runtime_.nativePeakEstimate());
+            values["lua_impl_bytes"] = std::to_string(LuaApp::nativeBytes());
             values["lua_used_bytes"] = std::to_string(runtime_.logicUsed());
             values["lua_peak_bytes"] = std::to_string(runtime_.logicPeak());
+            values["requests"] = std::to_string(requests_);
+            values["request_errors"] = std::to_string(requestErrors_);
+            values["metrics_requests"] = std::to_string(metricRequests_);
+            values["install_steps"] = std::to_string(installSteps_);
+            values["install_active"] = install_ ? "1" : "0";
+            values["install_publishing"] = install_ && install_->publishing() ? "1" : "0";
+            values["epoch_durable_writes"] = std::to_string(epochWrites_);
+            values["epoch_write_errors"] = std::to_string(epochWriteErrors_);
+            values["epoch_checkpoint_disabled"] =
+                epoch_ && nextEpochSave_ == UINT64_MAX ? "1" : "0";
+            values["event_queue_peak"] = std::to_string(events_.peak());
+            values["event_queue_overflows"] = std::to_string(events_.overflows());
+            const auto addTiming = [&](const char *name, const Timing &sample) {
+                values[std::string(name) + "_count"] = std::to_string(sample.count);
+                values[std::string(name) + "_total_us"] = std::to_string(sample.totalUs);
+                values[std::string(name) + "_max_us"] = std::to_string(sample.maxUs);
+            };
+            if (platform_.microseconds) {
+                addTiming("request", requestTiming_);
+                addTiming("install_step", installTiming_);
+                addTiming("install_publish", installPublishTiming_);
+                addTiming("logic", logicTiming_);
+                addTiming("scene", sceneTiming_);
+                addTiming("paint", paintTiming_);
+                addTiming("resource_read", runtime_.resources().readTiming());
+            }
+            values["resource_read_bytes"] = std::to_string(runtime_.resources().readBytes());
+            values["resource_read_errors"] = std::to_string(runtime_.resources().readErrors());
             const auto &diagnostic =
                 lastLogicError_ != Error::ok ? lastDiagnostic_ : runtime_.diagnostic();
             if (diagnostic.error != Error::ok || diagnostic.logCount) {
@@ -571,11 +998,32 @@ Frame Core::handle(const Frame &request, Session &session) {
                 for (size_t i = 0; i < diagnostic.logCount; ++i)
                     values["logic_log_" + std::to_string(i)] = diagnostic.log[i].data();
             }
-            out.n(values.size(), 2);
-            for (const auto &[key, value] : values) {
-                out.text(key);
-                out.text(value);
-            }
+            // Fault details must remain readable even with many adapter counters.
+            // This map is extensible; report truncation instead of losing the whole reply.
+            constexpr std::string_view truncatedKey = "diagnostics_truncated";
+            constexpr size_t limit = MaxPayload - 4 - 4 - truncatedKey.size() - 1;
+            Writer rows;
+            uint16_t count = 0;
+            bool truncated = false;
+            for (int pass = 0; pass < 2; ++pass)
+                for (const auto &[key, value] : values) {
+                    const bool fault = key.starts_with("logic_") || key == "last_logic_error";
+                    if (fault != (pass == 0) || key == truncatedKey)
+                        continue;
+                    const auto size = key.size() + value.size() + 4;
+                    if (count == 127 || key.size() > 80 || value.size() > 192 ||
+                        size > limit - rows.data.size()) {
+                        truncated = true;
+                        continue;
+                    }
+                    rows.text(key);
+                    rows.text(value);
+                    ++count;
+                }
+            out.n(count + 1, 2);
+            out.raw(rows.data);
+            out.text(truncatedKey);
+            out.text(truncated ? "1" : "0");
             break;
         }
         case Method::info: {
@@ -726,70 +1174,14 @@ Frame Core::handle(const Frame &request, Session &session) {
             break;
         }
         case Method::install_commit: {
-            if (!in.done()) {
-                fail(Error::invalid_argument);
-                break;
-            }
-            auto path = packages_.staging();
-            auto meta = readText(path + ".meta", 100);
-            auto split = meta.find(':');
-            File file;
-            if (split == std::string::npos || !file.open(path) ||
-                file.size != strtoul(meta.substr(0, split).c_str(), nullptr, 10)) {
-                fail(Error::invalid_state);
-                break;
-            }
-            Sha256 hash;
-            std::array<uint8_t, 256> buffer{};
-            for (uint32_t offset = 0; offset < file.size;) {
-                auto count = std::min<uint32_t>(buffer.size(), file.size - offset);
-                auto bytes = std::span(buffer).first(count);
-                if (!file.source().read(&file, offset, bytes)) {
-                    fail(Error::io_error);
-                    break;
-                }
-                hash.update(bytes);
-                offset += count;
-            }
-            file.close();
-            std::string digest;
-            const char *hex = "0123456789abcdef";
-            for (auto b : hash.finish()) {
-                digest += hex[b >> 4];
-                digest += hex[b & 15];
-            }
-            if (error != Error::ok)
-                break;
-            if (digest != meta.substr(split + 1)) {
-                fail(Error::integrity_failed);
-                break;
-            }
-            Manifest candidate;
-            error = packages_.inspect(path, candidate);
-            if (error != Error::ok)
-                break;
-            error = revokePackage(candidate.id);
-            if (error != Error::ok) {
-                break;
-            }
-            bool active = runtime_.manifest().id == candidate.id;
-            std::string component = runtime_.component().id, id;
-            if (active)
-                runtime_.stop();
-            error = packages_.commit(path, id);
+            error = beginInstall(request, session);
             if (error == Error::ok) {
-                unlink((path + ".meta").c_str());
-                refreshProviders(id, false);
-                out.text(id);
-            }
-            if (active) {
-                auto launchError = launch(candidate.id, component);
-                if (launchError != Error::ok) {
-                    packages_.rollback(candidate.id);
-                    launch(candidate.id, component);
-                    if (error == Error::ok)
-                        error = launchError;
-                }
+                while (install_)
+                    advanceInstall();
+                Frame result;
+                if (takeReply(session, result))
+                    return result;
+                error = Error::invalid_state;
             }
             break;
         }
@@ -857,9 +1249,15 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto text = std::to_string(epoch);
             if (!writeAtomic(packages_.root() + "/epoch",
                     {reinterpret_cast<const uint8_t *>(text.data()), text.size()})) {
+                ++epochWriteErrors_;
                 epoch_ = previous;
                 base_ = previousBase;
                 fail(Error::io_error);
+            } else {
+                ++epochWrites_;
+                epochFailures_ = 0;
+                lastSave_ = base_;
+                nextEpochSave_ = base_ > UINT64_MAX - 60000 ? UINT64_MAX : base_ + 60000;
             }
             break;
         }
@@ -882,7 +1280,33 @@ Frame Core::handle(const Frame &request, Session &session) {
         }
         case Method::settings_set: {
             auto key = in.text(64), value = in.text(192);
-            if (!in.done() || key != "utc_offset") {
+            if (!in.done()) {
+                fail(Error::invalid_argument);
+                break;
+            }
+            if (key == "ble_enabled") {
+                if (!(platform_.capabilities & CapBlePolicy) || !platform_.ble_check ||
+                    !platform_.ble_apply) {
+                    fail(Error::not_supported);
+                    break;
+                }
+                if (value != "0" && value != "1") {
+                    fail(Error::invalid_argument);
+                    break;
+                }
+                error = lastBlePolicyError_ = platform_.ble_check(value == "1");
+                if (error != Error::ok)
+                    break;
+                const auto old = settings_;
+                settings_[key] = value;
+                error = persistSettings();
+                if (error != Error::ok)
+                    settings_ = old;
+                else
+                    platform_.ble_apply(value == "1");
+                break;
+            }
+            if (key != "utc_offset") {
                 fail(Error::invalid_argument);
                 break;
             }
@@ -972,28 +1396,11 @@ Frame Core::handle(const Frame &request, Session &session) {
             error = persistGrants();
             if (error != Error::ok)
                 grants_ = std::move(old);
-            if (!enabled) {
-                haveMetrics_ = false;
-                events_.clear();
-            }
             break;
         }
-        case Method::metrics: {
-            if (!canReceiveMetrics()) {
-                fail(Error::permission_denied);
-                break;
-            }
-            auto cpu = in.n(), ram = in.n();
-            if (!in.done() || cpu > 10000 || ram > 10000) {
-                fail(Error::invalid_argument);
-                break;
-            }
-            cpu_ = cpu / 100.0;
-            ram_ = ram / 100.0;
-            metricAt_ = platform_.monotonic();
-            haveMetrics_ = true;
+        case Method::metrics:
+            error = boundGeneration_ ? Error::invalid_state : receiveMetrics(in, session);
             break;
-        }
         case Method::pairing: {
             auto action = in.text(64);
             if (!in.done()) {
@@ -1034,14 +1441,11 @@ Frame Core::handle(const Frame &request, Session &session) {
                 break;
             }
             Installed p;
-            error = packages_.locate(id, p);
+            File file;
+            Package package;
+            error = packages_.locate(id, p, file, package);
             if (error != Error::ok)
                 break;
-            File file;
-            if (!file.open(p.path)) {
-                fail(Error::io_error);
-                break;
-            }
             if (offset > file.size) {
                 fail(Error::invalid_argument);
                 break;
@@ -1079,8 +1483,10 @@ Frame Core::handle(const Frame &request, Session &session) {
     if (error == Error::ok && request.method != Method::scene && request.method != Method::info &&
         request.method != Method::packages && request.method != Method::package_read &&
         request.method != Method::permissions_get && request.method != Method::settings_get &&
-        request.method != Method::hello && request.method != Method::install_chunk &&
-        request.method != Method::install_begin) {
+        request.method != Method::diagnostics && request.method != Method::companion_subscribe &&
+        request.method != Method::companion_bind && request.method != Method::hello &&
+        request.method != Method::install_chunk && request.method != Method::install_begin &&
+        request.method != Method::session_close) {
         bindingsDirty_ = true;
         events_.post({4, 0, runtime_.generation()});
     }
@@ -1089,10 +1495,14 @@ Frame Core::handle(const Frame &request, Session &session) {
     if (error == Error::ok)
         result.raw(out.data);
     if (result.data.size() > MaxPayload) {
+        error = Error::quota_exceeded;
         result.data.clear();
         result.n(uint16_t(Error::quota_exceeded), 2);
     }
     reply.payload = std::move(result.data);
+    if (error != Error::ok)
+        ++requestErrors_;
+    refreshCompanionDemand();
     return reply;
 }
 } // namespace flint

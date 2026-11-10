@@ -1,4 +1,5 @@
 #pragma once
+#include "diagnostics.h"
 #include "graphics/renderer.h"
 #include "manifest.h"
 namespace flint {
@@ -18,10 +19,25 @@ class ResourceManager {
     };
     std::array<GlyphInfo, 16> metrics_{};
     size_t nextMetric_{};
+    std::function<uint64_t()> clock_;
+    Timing readTiming_;
+    uint64_t readBytes_{}, readErrors_{};
     GlyphInfo lookup(unsigned font, uint32_t codepoint);
     Error view(uint32_t id, Package::View &result) const;
 
 public:
+    void profilingClock(std::function<uint64_t()> clock) {
+        clock_ = std::move(clock);
+    }
+    const Timing &readTiming() const {
+        return readTiming_;
+    }
+    uint64_t readBytes() const {
+        return readBytes_;
+    }
+    uint64_t readErrors() const {
+        return readErrors_;
+    }
     void bind(Package *package) {
         package_ = package;
         views_ = {};

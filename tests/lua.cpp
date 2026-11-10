@@ -1,7 +1,18 @@
 #include <cstdlib>
 #include <flint/lua_app.h>
 #include <iostream>
+#include <new>
 #include <string>
+static bool failNativeAllocation = false;
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
+    if (failNativeAllocation)
+        return nullptr;
+    try {
+        return ::operator new(size);
+    } catch (...) {
+        return nullptr;
+    }
+}
 using namespace flint;
 #define CHECK(x)                                                                                   \
     do {                                                                                           \
@@ -23,6 +34,11 @@ int main() {
     auto load = [&](std::string_view source, uint32_t instructions = 4096) {
         return app.load(source, memory, instructions, scene);
     };
+    failNativeAllocation = true;
+    CHECK(load("return {}") == Error::resource_exhausted);
+    CHECK(!app.active() && app.used() == 0);
+    failNativeAllocation = false;
+    CHECK(LuaApp::nativeBytes() >= sizeof(LuaValue) * 16);
     CHECK(load("local n=0; return {update=function(dt,pressed) n=n+1; "
                "ignite.value('score',n); ignite.set(2,'x',n) end}") == Error::ok);
     CHECK(app.active() && app.used() > 0 && app.peak() <= memory);

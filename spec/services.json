@@ -126,6 +126,37 @@
             "name": "diagnostics",
             "mutates": false,
             "trust": "authenticated_companion"
+        },
+        {
+            "id": 22,
+            "name": "companion_subscribe",
+            "mutates": true,
+            "trust": "authenticated_companion"
+        },
+        {
+            "id": 23,
+            "name": "companion_bind",
+            "mutates": true,
+            "trust": "authenticated_companion"
+        },
+        {
+            "id": 24,
+            "name": "companion_sample",
+            "mutates": true,
+            "trust": "authenticated_companion"
+        },
+        {
+            "id": 25,
+            "name": "companion_state",
+            "mutates": false,
+            "trust": "authenticated_companion",
+            "direction": "event"
+        },
+        {
+            "id": 26,
+            "name": "session_close",
+            "mutates": true,
+            "trust": "authenticated_companion"
         }
     ]
 }

@@ -43,6 +43,8 @@ option(FLINT_PLATFORM_TESTS "Build local platform tests" ON)
 if(FLINT_PLATFORM_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME companion_client COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_companion.py)
     add_test(NAME registry_validation COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_registry.py)
     add_executable(resource_tests tests/resources.cpp)
@@ -98,6 +100,11 @@ if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS)
 endif()
 
 if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(async_install_tests tests/async_install.cpp)
+    target_link_libraries(async_install_tests PRIVATE flint_platform)
+    add_test(NAME async_install COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_async_install.py $<TARGET_FILE:async_install_tests>)
+    set_tests_properties(async_install PROPERTIES TIMEOUT 40)
     add_executable(lua_tests tests/lua.cpp)
     target_link_libraries(lua_tests PRIVATE flint_platform)
     add_test(NAME lua_sandbox COMMAND lua_tests)

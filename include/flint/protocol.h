@@ -24,7 +24,12 @@ enum class Method : uint16_t {
     rollback,
     recover,
     package_read,
-    diagnostics
+    diagnostics,
+    companion_subscribe = 22,
+    companion_bind = 23,
+    companion_sample = 24,
+    companion_state = 25,
+    session_close = 26
 };
 struct Frame {
     Method method{};
@@ -32,6 +37,9 @@ struct Frame {
     bool reply{};
     Bytes payload;
 };
+inline bool isCompanionEvent(const Frame &frame) {
+    return !frame.reply && !frame.id && frame.method == Method::companion_state;
+}
 inline Bytes encodeFrame(const Frame &frame) {
     if (frame.payload.size() > MaxPayload)
         return {};
@@ -50,6 +58,9 @@ class FrameParser {
     Bytes bytes_;
 
 public:
+    size_t bufferCapacity() const {
+        return bytes_.capacity();
+    }
     void reset() {
         bytes_.clear();
     }
@@ -65,6 +76,10 @@ public:
                 bytes_.erase(bytes_.begin());
                 continue;
             }
+            // Once the bounded header is known, reserve the exact frame size.
+            // Byte-wise geometric growth otherwise retains 8192 bytes for a 4116-byte frame.
+            if (bytes_.capacity() < 20 + size)
+                bytes_.reserve(20 + size);
             if (bytes_.size() < 20 + size)
                 continue;
             if (crc32(std::span(bytes_).first(16 + size)) == u32(bytes_.data() + 16 + size)) {
