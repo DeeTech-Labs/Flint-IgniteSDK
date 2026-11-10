@@ -61,6 +61,13 @@ int main() {
         CHECK(load(source) != Error::ok);
         CHECK(!app.active());
     }
+    CHECK(load("return {update=function() ignite.set(2,'x',5); ignite.value('fixed',7) end}") ==
+        Error::ok);
+    CHECK(app.visualChanged());
+    CHECK(app.update(33, false) == Error::ok && !app.visualChanged());
+    CHECK(load("local n=0; return {update=function() n=n+1; ignite.value('fixed',n) end}") ==
+        Error::ok);
+    CHECK(app.update(33, false) == Error::ok && app.visualChanged());
     CHECK(load("\x1bLua") == Error::invalid_argument);
     CHECK(load("not valid lua") != Error::ok);
     CHECK(load(std::string("return ") + std::string(300, '(') + "1" + std::string(300, ')')) !=

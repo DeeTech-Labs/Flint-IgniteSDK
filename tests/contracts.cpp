@@ -1,9 +1,12 @@
 #include <cstdlib>
 #include <flint/package.h>
+#include <flint/binary.h>
+#include <flint/graphics/scene.h>
 #include <flint/permissions.h>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <vector>
 using namespace flint;
 #define CHECK(x)                                                                                   \
@@ -26,6 +29,17 @@ static std::vector<uint8_t> load(const char *file) {
     return {std::istreambuf_iterator<char>(input), {}};
 }
 int main(int argc, char **argv) {
+    {
+        Reader reader{{}, std::numeric_limits<size_t>::max()};
+        CHECK(reader.n(2) == 0 && !reader.valid);
+        FlintRender::Scene scene;
+        uint8_t byte = 0;
+        CHECK(!scene.add({}, &byte, std::numeric_limits<size_t>::max()));
+        CHECK(!scene.valid && scene.count == 0);
+        FlintRender::Scene nullData;
+        CHECK(!nullData.add({}, nullptr, 1));
+        CHECK(!nullData.valid && nullData.count == 0);
+    }
     CHECK(ApiVersion == 1 && PackageVersion == 1 && FaceApiVersion == 1 && ProtocolVersion == 1);
     CHECK(compatible({1, ContractRevision, "local", 3}, 3) == Error::ok);
     CHECK(compatible({1, 0, "old", 3}, 3) == Error::incompatible_contract);

@@ -35,6 +35,60 @@ def publish_file(destination, data):
             temporary.unlink(missing_ok=True)
 
 
+def scenario_script(path):
+    if path.stat().st_size > 256 * 1024:
+        raise ValueError("scenario exceeds 256 KiB")
+    scenario = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(scenario, dict) or set(scenario) != {"steps"}
+            or not isinstance(scenario["steps"], list) or not 1 <= len(scenario["steps"]) <= 4096):
+        raise ValueError("scenario requires 1..4096 steps")
+    lines = []
+    def integer(value, low, high):
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError("scenario integer out of range")
+        return str(value)
+    def encoded(value):
+        if not isinstance(value, str) or len(value.encode("utf-8")) > 192 or "\0" in value:
+            raise ValueError("invalid scenario text")
+        return value.encode("utf-8").hex() or "-"
+    for step in scenario["steps"]:
+        if not isinstance(step, dict) or "op" not in step:
+            raise ValueError("scenario step requires op")
+        op = step["op"]
+        fields = {"op"}
+        if op == "advance":
+            fields |= {"ms"}; line = "advance " + integer(step.get("ms"), 0, 86400000)
+        elif op == "input":
+            fields |= {"kind", "value", "expect"}
+            kind = step.get("kind")
+            if kind not in ("press", "release", "hold", "rotate", "focus_lost", "focus_gained"):
+                raise ValueError("invalid input kind")
+            line = "input " + kind + " " + integer(step.get("value", 0), -2147483648, 2147483647) + " " + integer(step.get("expect", 0), 0, 15)
+        elif op in ("suspend", "resume", "restart", "reboot"):
+            line = op
+        elif op == "expect_text":
+            fields |= {"text"}; line = op + " " + encoded(step.get("text"))
+        elif op == "expect_state":
+            fields |= {"state"}
+            if step.get("state") not in ("active", "suspended", "empty"):
+                raise ValueError("invalid expected state")
+            line = op + " " + step["state"]
+        elif op == "expect_error":
+            fields |= {"error"}; line = op + " " + integer(step.get("error"), 0, 15)
+        elif op == "permission":
+            fields |= {"permission", "scope", "enabled"}
+            name = identifier(step.get("permission", ""))
+            if type(step.get("enabled")) is not bool:
+                raise ValueError("permission enabled must be boolean")
+            line = op + " " + name + " " + encoded(step.get("scope", "")) + " " + str(int(step["enabled"]))
+        else:
+            raise ValueError("unknown scenario operation")
+        if set(step) - fields:
+            raise ValueError("unknown scenario step fields")
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -56,6 +110,9 @@ def main(argv=None):
     run.add_argument("--frames", type=int, default=120)
     run.add_argument("--press-every", type=int, default=24)
     run.add_argument("--image", type=Path, required=True)
+    run.add_argument("--scenario", type=Path, help="replay bounded JSON steps through Core")
+    run.add_argument("--storage", type=Path, help="retain simulator private state between runs")
+    run.add_argument("--factory", type=Path, help="factory packages for recovery scenarios")
     run.add_argument("--runner", type=Path, default=Path(__file__).with_name(
         "ignite-run.exe" if os.name == "nt" else "ignite-run"))
     args = parser.parse_args(argv)
@@ -86,9 +143,20 @@ def main(argv=None):
                 raise ValueError("frames must be 1..3600; press interval 0..3600")
             if args.image.resolve() == args.package.resolve():
                 raise ValueError("image must not overwrite package")
-            result = subprocess.run([str(args.runner.resolve()), str(args.package.resolve()),
-                str(args.frames), str(args.press_every), str(args.image.resolve())],
-                capture_output=True, text=True, encoding="utf-8")
+            if (args.storage or args.factory) and not args.scenario:
+                raise ValueError("--storage and --factory require --scenario")
+            script = scenario_script(args.scenario) if args.scenario else None
+            if args.scenario and args.image.resolve() == args.scenario.resolve():
+                raise ValueError("image must not overwrite scenario")
+            with tempfile.TemporaryDirectory(prefix="ignite-scenario-") as directory:
+                command = [str(args.runner.resolve()), str(args.package.resolve()),
+                    str(args.frames), str(args.press_every), str(args.image.resolve())]
+                if script is not None:
+                    storage = args.storage.resolve() if args.storage else Path(directory) / "store"
+                    factory = args.factory.resolve() if args.factory else Path(directory) / "factory"
+                    command += ["--scenario", str(storage), str(factory)]
+                result = subprocess.run(command, input=script,
+                    capture_output=True, text=True, encoding="utf-8")
             if result.returncode:
                 raise ValueError(result.stderr.strip() or "simulation failed")
             print(result.stdout, end="")

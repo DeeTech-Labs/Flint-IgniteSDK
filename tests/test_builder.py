@@ -16,6 +16,17 @@ spec.loader.exec_module(builder)
 
 
 class BuilderTests(unittest.TestCase):
+    def test_size_limits(self):
+        self.assertTrue(builder.build([(1, "manifest", b"x" * 4096)]))
+        with self.assertRaisesRegex(ValueError, "manifest"):
+            builder.build([(1, "manifest", b"x" * 4097)])
+        # Include header and both index entries in the package limit.
+        resource_size = 1024 * 1024 - 64 - 2 * 24 - 2
+        sections = [(1, "manifest", b"{}"), (2, "resource", b"x" * resource_size)]
+        self.assertEqual(len(builder.build(sections)), 1024 * 1024)
+        with self.assertRaisesRegex(ValueError, "package"):
+            builder.build([sections[0], (2, "resource", b"x" * (resource_size + 1))])
+
     def test_duplicate_and_empty(self):
         for sections in (
             [],

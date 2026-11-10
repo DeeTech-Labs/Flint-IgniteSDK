@@ -8,7 +8,7 @@ Flint IgniteSDK is the shared platform for the FlinT ecosystem.
 
 It provides portable runtime functionality, application contracts, binary package handling, rendering, developer tools, and integration interfaces.
 
-The SDK is the authoritative implementation shared by:
+The SDK owns the authoritative shared implementation used by the following consumers; consumers use their pinned revisions, not automatically the latest sibling checkout:
 
 - FlinT OS firmware.
 - FlinT Flare and its Preview environment.
@@ -148,9 +148,7 @@ Current nominal public versions:
 
 The current development contract revision is:
 
-`0x20261105`
-
-This is defined in `include/flint/contracts.h`.
+`0x20261105` at the time these instructions were aligned. Always read `ContractRevision` and nominal versions from `include/flint/contracts.h`; this summary must not override the checked-out headers.
 
 Nominal API version equality does not guarantee compatibility.
 
@@ -370,14 +368,14 @@ The current implementation includes:
 
 - Memory-accounting allocator.
 - Instruction-count hook.
-- Restricted Lua libraries.
+- Lua core and lauxlib only, with the standard libraries and standalone interpreter excluded by `cmake/LuaSources.cmake`; the application environment is created explicitly in `src/lua_app.cpp`.
 - Limited application source size.
 - Bounded event-handler execution.
 
 The documented Lua contract currently includes:
 
 - Maximum source size: 16 KiB.
-- Declared internal memory: 48–144 KiB.
+- Declared internal memory for Lua packages: 48–144 KiB. `Runtime` reserves 16 KiB from that declaration before passing the remainder to the Lua allocator; do not interpret the full declaration as Lua heap capacity.
 - Instruction budget: 1–100000 per handler.
 - Nested C-call limit: 40.
 
@@ -519,9 +517,9 @@ The canonical service registry is:
 
 `spec/services.json`
 
-Registries are generated using:
+Permission and service descriptor headers (`include/flint/registry.h` and `include/flint/services.h`) are generated using `tools/generate_registry.py`.
 
-`tools/generate_registry.py`
+`include/flint/protocol.h` is maintained source, not generated output. When adding or changing a service, update its `Method` definition together with `spec/services.json`, regenerate descriptors, and verify the generated identifier static assertions. Registry metadata does not by itself implement trust or permission enforcement.
 
 ### Rules
 
@@ -663,12 +661,12 @@ Do not introduce TTF, PNG, SVG, YAML, or source JSON parsing into embedded Runti
 
 IgniteSDK must remain practical for ESP32-S3.
 
-Current verified Spark hardware configuration includes:
+The Spark reference configuration documented by the OS consumer includes:
 
 - 4 MiB Flash.
 - 2 MiB PSRAM.
 
-Do not assume these values apply to every future device.
+These are consumer hardware characteristics, not SDK build requirements or measurements performed by an agent. Verify the selected OS board profile and configuration; do not assume these values apply to every device.
 
 ### Memory
 
@@ -784,6 +782,7 @@ Run from the repository root.
 ### Developer Dependencies
 
 ```sh
+# Install into an active project virtual environment when needed.
 python3 -m pip install Pillow
 ```
 
@@ -792,19 +791,22 @@ python3 -m pip install Pillow
 ```sh
 python3 tools/generate_registry.py
 python3 tools/build_system.py
+git diff --exit-code -- include/flint/registry.h include/flint/services.h factory examples
 ```
+
+`build_system.py` writes factory packages and example `sample.ignit` files; inspect existing changes before running generators. The diff check detects stale checked-in artifacts and must be interpreted against the pre-existing working tree. Do not discard local changes to make it pass.
 
 ### Host Build
 
 ```sh
-cmake -S . -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/flint-platform --parallel
+cmake -S . -B /tmp/flint-ignitesdk -DCMAKE_BUILD_TYPE=Debug
+cmake --build /tmp/flint-ignitesdk --parallel 2
 ```
 
 ### Tests
 
 ```sh
-ctest --test-dir /tmp/flint-platform --output-on-failure
+ctest --test-dir /tmp/flint-ignitesdk --output-on-failure
 ```
 
 ### Example Package
@@ -818,7 +820,7 @@ python3 tools/compile_ignite.py \
 ### SDK Installation
 
 ```sh
-cmake --install /tmp/flint-platform --prefix /tmp/flint-sdk
+cmake --install /tmp/flint-ignitesdk --prefix /tmp/flint-sdk
 ```
 
 ### Lua-Disabled Configuration
@@ -832,7 +834,9 @@ cmake --build /tmp/flint-no-lua --parallel
 ctest --test-dir /tmp/flint-no-lua --output-on-failure
 ```
 
-Build configurations must use isolated directories.
+Build configurations and different SDK checkouts must use isolated directories. Do not reuse the build tree of an OS/Flare submodule for this standalone checkout. Use a fresh path if any shown directory belongs to another checkout. Multi-configuration generators require `--config Debug` for build/install and `-C Debug` for CTest.
+
+Host prerequisites are CMake 3.21+, C/C++ compilers with C++20 support, and Python 3 for tests/tools; Pillow is needed for font/image compilation. Lua is bundled and needs no system Lua installation. With `FLINT_PLATFORM_TESTS=OFF`, CMake does not require Python for tests.
 
 Do not change generated or checked-in assets without evaluating reproducibility.
 

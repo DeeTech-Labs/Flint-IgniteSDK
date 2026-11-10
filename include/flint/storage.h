@@ -1,4 +1,5 @@
 #pragma once
+#include "app_api.h"
 #include "manifest.h"
 #include <cstdio>
 #include <functional>
@@ -25,12 +26,17 @@ class PackageManager {
     std::string root_, factory_;
     MemoryBudget available_;
     uint64_t capabilities_;
+    uint64_t revision_{};
 
 public:
     PackageManager(
         std::string root, std::string factory, MemoryBudget available, uint64_t capabilities)
         : root_(std::move(root)), factory_(std::move(factory)), available_(available),
           capabilities_(capabilities) {}
+    // Changes only at catalog mutation boundaries; never caches authorization.
+    uint64_t revision() const {
+        return revision_;
+    }
     Error begin();
     void visit(const std::function<bool(const Installed &)> &visitor) const;
     std::vector<Installed> list() const;
@@ -46,6 +52,9 @@ public:
         return root_;
     }
 };
+// Core supplies the installed namespace; applications cannot choose package identity.
+Error privateStorage(const std::string &root, const Manifest &manifest, AppService operation,
+    std::string_view key, std::string_view value, AppReply &reply);
 bool writeAtomic(const std::string &path, std::span<const uint8_t> bytes);
 std::string readText(const std::string &path, size_t max = 256);
 } // namespace flint

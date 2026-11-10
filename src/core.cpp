@@ -47,7 +47,76 @@ static uint64_t generation(const Installed &p) {
 }
 Core::Core(std::string root, std::string factory, Platform platform)
     : platform_(std::move(platform)),
-      packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities) {}
+      packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities) {
+    runtime_.host({this,
+        [](void *context, AppService service, std::string_view key, std::string_view value,
+            AppReply &reply) {
+            return static_cast<Core *>(context)->appCall(service, key, value, reply);
+        },
+        [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); }, true});
+}
+Error Core::appCall(
+    AppService service, std::string_view key, std::string_view value, AppReply &reply) {
+    // Runtime has checked the canonical declaration; this bridge never accepts app-supplied
+    // identity.
+    const auto &manifest = runtime_.manifest();
+    if (service == AppService::storage_get || service == AppService::storage_set ||
+        service == AppService::storage_delete) {
+        const bool write = service != AppService::storage_get;
+        const auto at = platform_.monotonic();
+        if (write && privateWritten_ && (at < privateWriteAt_ || at - privateWriteAt_ < 1000))
+            return Error::quota_exceeded;
+        const auto error = privateStorage(packages_.root(), manifest, service, key, value, reply);
+        if (error == Error::ok && write) {
+            privateWriteAt_ = at;
+            privateWritten_ = true;
+        }
+        return error;
+    }
+    if (service == AppService::time || service == AppService::monotonic) {
+        if (!key.empty())
+            return Error::invalid_argument;
+        const auto number = service == AppService::time ? now() : platform_.monotonic();
+        if (number > uint64_t(INT64_MAX))
+            return Error::resource_exhausted;
+        if (service == AppService::time && !number)
+            return Error::source_unavailable;
+        reply.number = int64_t(number);
+        reply.numeric = true;
+        return Error::ok;
+    }
+    if (service == AppService::info) {
+        if (key.empty() || key == "profile")
+            return reply.assign(DeviceProfile);
+        if (key == "build_id")
+            return reply.assign(platform_.build_id);
+        return Error::source_unavailable;
+    }
+    if (service == AppService::power)
+        return platform_.power ? platform_.power(key, reply) : Error::not_supported;
+    const Values *values = service == AppService::locale ? &locale_
+        : service == AppService::theme                   ? &theme_
+        : service == AppService::settings                ? &settings_
+                                                         : nullptr;
+    if (!values)
+        return Error::not_supported;
+    const auto found = values->find(key);
+    return found == values->end() ? Error::source_unavailable : reply.assign(found->second);
+}
+uint64_t Core::nextWake() const {
+    const auto at = platform_.monotonic();
+    if (!events_.empty())
+        return at;
+    auto next = runtime_.nextWake();
+    if (epoch_ && at >= base_) {
+        const auto minuteDelay = (60 - now() % 60) * 1000 - (at - base_) % 1000;
+        if (minuteDelay <= UINT64_MAX - at)
+            next = std::min(next, at + minuteDelay);
+    }
+    if (haveMetrics_ && metricAt_ <= UINT64_MAX - 10000)
+        next = std::min(next, metricAt_ + 10000);
+    return next;
+}
 Error Core::persistSettings() {
     return writeAtomic(packages_.root() + "/settings.bin", valuesBytes(settings_))
         ? Error::ok
@@ -86,6 +155,7 @@ Error Core::revokePackage(std::string_view id) {
     return result;
 }
 void Core::refreshProviders(std::string_view id, bool removed) {
+    bindingsDirty_ = true;
     for (const auto role : {Role::theme, Role::locale}) {
         const auto key = "role" + std::to_string(unsigned(role));
         const auto selected = settings_.find(key);
@@ -197,6 +267,9 @@ Error Core::launch(std::string_view id, std::string_view component) {
     auto result = runtime_.launch(p, component, platform_.memory, platform_.capabilities);
     if (result != Error::ok) {
         lastLogicError_ = result;
+        lastDiagnostic_ = runtime_.diagnostic();
+        lastLogicPackage_ = id;
+        lastLogicComponent_ = component;
         if (runtime_.state() == State::empty) {
             const auto failed = std::string(id) + "/" + std::string(component);
             const auto selected = settings_.find("role1");
@@ -221,40 +294,67 @@ bool Core::canReceiveMetrics() {
             declared = true;
     if (!declared)
         return false;
-    Installed installed;
-    if (packages_.locate(m.id, installed) != Error::ok)
+    if (metricRuntime_ != runtime_.generation() || metricCatalog_ != packages_.revision()) {
+        metricRuntime_ = runtime_.generation();
+        metricCatalog_ = packages_.revision();
+        Installed installed;
+        metricIdentityValid_ = packages_.locate(m.id, installed) == Error::ok;
+        if (metricIdentityValid_) {
+            metricPrincipal_ = {identity(m.id), identity(m.publisher), generation(installed)};
+            metricIdentityValid_ = metricPrincipal_.generation != 0 &&
+                metricPrincipal_.generation == runtime_.packageIdentity() &&
+                installed.manifest.publisher == m.publisher;
+            metricFactory_ = installed.factory;
+        }
+    }
+    if (!metricIdentityValid_ || runtime_.state() != State::active)
         return false;
-    std::vector<Grant> grants;
-    for (auto &g : grants_)
-        if (g.package == m.id)
-            grants.push_back({{identity(m.id), identity(m.publisher), g.generation}, g.permission,
-                g.scope, g.expires, g.session, g.action, g.enabled});
-    Call call{{identity(m.id), identity(m.publisher), generation(installed)}, "cpu,ram",
-        platform_.monotonic(), 0, 0, platform_.capabilities, true, true, installed.factory};
-    return authorize(*permission("companion.pc.metrics"), call, grants) == Error::ok;
+    Call call{metricPrincipal_, "cpu,ram", platform_.monotonic(), 0, 0, platform_.capabilities,
+        true, true, metricFactory_};
+    // Recheck live grants without allocating a temporary collection or caching a decision.
+    const auto &spec = *permission("companion.pc.metrics");
+    for (const auto &g : grants_) {
+        if (g.package != m.id)
+            continue;
+        Grant grant{{metricPrincipal_.app, metricPrincipal_.publisher, g.generation}, g.permission,
+            g.scope, g.expires, g.session, g.action, g.enabled};
+        if (authorize(spec, call, std::span(&grant, 1)) == Error::ok)
+            return true;
+    }
+    return false;
 }
 bool Core::tick() {
     const auto at = platform_.monotonic();
     bool logicDirty = false;
-    if (runtime_.scripted() && runtime_.state() == State::active && at - logicAt_ >= 33) {
-        const auto elapsed = uint32_t(std::min<uint64_t>(at - logicAt_, 100));
-        logicAt_ = at;
+    if (runtime_.scripted() && runtime_.state() == State::active && runtime_.nextWake() <= at) {
         // Failure is handled by the same factory recovery path as render errors.
-        const auto failed = runtime_.manifest().id + "/" + runtime_.component().id;
-        const auto logicError = runtime_.update(elapsed);
+        const auto selected = settings_.find("role1");
+        const std::string_view selection =
+            selected == settings_.end() ? std::string_view{} : selected->second;
+        const auto &id = runtime_.manifest().id;
+        const bool selectedActive =
+            selection.size() == id.size() + 1 + runtime_.component().id.size() &&
+            selection.starts_with(id) && selection[id.size()] == '/' &&
+            selection.substr(id.size() + 1) == runtime_.component().id;
+        std::array<char, 65> packageId{}, componentId{};
+        std::copy(runtime_.manifest().id.begin(), runtime_.manifest().id.end(), packageId.begin());
+        std::copy(
+            runtime_.component().id.begin(), runtime_.component().id.end(), componentId.begin());
+        const auto logicError = runtime_.tick(at);
         if (logicError != Error::ok) {
             lastLogicError_ = logicError;
+            lastDiagnostic_ = runtime_.diagnostic();
+            lastLogicPackage_ = packageId.data();
+            lastLogicComponent_ = componentId.data();
             runtime_.stop();
-            const auto selected = settings_.find("role1");
-            if (selected != settings_.end() && selected->second == failed) {
+            if (selectedActive) {
                 settings_.erase(selected);
                 persistSettings();
             }
             activateRole(Role::clock);
         }
-        logicDirty = true;
-    } else if (!runtime_.scripted())
-        logicAt_ = at;
+        logicDirty = logicError != Error::ok || runtime_.visualChanged();
+    }
     const auto minute = now() / 60;
     if (minute != renderedMinute_) {
         renderedMinute_ = minute;
@@ -272,8 +372,20 @@ bool Core::tick() {
         }
     return dirty;
 }
-Values Core::bindings() {
-    Values values;
+const Values &Core::bindings() {
+    const auto minute = now() / 60;
+    const bool metrics =
+        haveMetrics_ && platform_.monotonic() - metricAt_ < 10000 && canReceiveMetrics();
+    if (!bindingsDirty_ && bindingsRuntime_ == runtime_.generation() && bindingsMinute_ == minute &&
+        bindingsCatalog_ == packages_.revision() && bindingsMetrics_ == metrics)
+        return bindings_;
+    bindingsDirty_ = false;
+    bindingsRuntime_ = runtime_.generation();
+    bindingsMinute_ = minute;
+    bindingsCatalog_ = packages_.revision();
+    bindingsMetrics_ = metrics;
+    auto &values = bindings_;
+    values.clear();
     auto epoch = now();
     int offset = 0;
     auto setting = settings_.find("utc_offset");
@@ -300,22 +412,24 @@ Values Core::bindings() {
     const auto &m = runtime_.manifest();
     const bool needsPackages = std::any_of(m.permissions.begin(), m.permissions.end(),
         [](const Declaration &d) { return d.permission == "packages.list"; });
-    std::string launcher;
-    if (needsPackages)
+    if (needsPackages && launcherCatalog_ != packages_.revision()) {
+        launcher_.clear();
         packages_.visit([&](const Installed &installed) {
             for (const auto &component : installed.manifest.components) {
                 if (component.type == Component::app || component.type == Component::watchface) {
-                    if (launcher.size() + installed.manifest.name.size() >= 170) {
+                    if (launcher_.size() + installed.manifest.name.size() >= 170) {
                         return false;
                     }
-                    launcher += installed.manifest.name + "  ";
+                    launcher_ += installed.manifest.name + "  ";
                 }
             }
             return true;
         });
+        launcherCatalog_ = packages_.revision();
+    }
     if (needsPackages)
-        values["packages.list"] = launcher;
-    if (canReceiveMetrics() && haveMetrics_ && platform_.monotonic() - metricAt_ < 10000) {
+        values["packages.list"] = launcher_;
+    if (metrics) {
         char b[48];
         snprintf(b, sizeof(b), "CPU %.1f%%  RAM %.1f%%", cpu_, ram_);
         values["companion.pc.metrics"] = b;
@@ -377,6 +491,9 @@ Error Core::scene(FlintRender::Scene &scene) {
 }
 void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     FlintRender::resourceContext = &runtime_.resources();
+    FlintRender::resourceMetrics = [](void *context, unsigned font, uint32_t cp) {
+        return static_cast<ResourceManager *>(context)->metrics(font, cp);
+    };
     FlintRender::resourceGlyph = [](void *context, unsigned font, uint32_t cp) {
         return static_cast<ResourceManager *>(context)->glyph(font, cp);
     };
@@ -387,6 +504,7 @@ void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     FlintRender::render(scene, canvas);
     FlintRender::resourceContext = nullptr;
     FlintRender::resourceGlyph = nullptr;
+    FlintRender::resourceMetrics = nullptr;
     FlintRender::resourceImage = nullptr;
 }
 void Core::disconnect(Session &session) {
@@ -439,6 +557,20 @@ Frame Core::handle(const Frame &request, Session &session) {
             values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
             values["lua_used_bytes"] = std::to_string(runtime_.logicUsed());
             values["lua_peak_bytes"] = std::to_string(runtime_.logicPeak());
+            const auto &diagnostic =
+                lastLogicError_ != Error::ok ? lastDiagnostic_ : runtime_.diagnostic();
+            if (diagnostic.error != Error::ok || diagnostic.logCount) {
+                values["logic_package"] =
+                    lastLogicError_ != Error::ok ? lastLogicPackage_ : runtime_.manifest().id;
+                values["logic_component"] =
+                    lastLogicError_ != Error::ok ? lastLogicComponent_ : runtime_.component().id;
+                values["logic_phase"] = diagnostic.phase.data();
+                values["logic_message"] = diagnostic.message.data();
+                values["logic_instructions"] = std::to_string(diagnostic.instructions);
+                values["logic_fault_peak_bytes"] = std::to_string(diagnostic.peak);
+                for (size_t i = 0; i < diagnostic.logCount; ++i)
+                    values["logic_log_" + std::to_string(i)] = diagnostic.log[i].data();
+            }
             out.n(values.size(), 2);
             for (const auto &[key, value] : values) {
                 out.text(key);
@@ -948,8 +1080,10 @@ Frame Core::handle(const Frame &request, Session &session) {
         request.method != Method::packages && request.method != Method::package_read &&
         request.method != Method::permissions_get && request.method != Method::settings_get &&
         request.method != Method::hello && request.method != Method::install_chunk &&
-        request.method != Method::install_begin)
+        request.method != Method::install_begin) {
+        bindingsDirty_ = true;
         events_.post({4, 0, runtime_.generation()});
+    }
     Writer result;
     result.n(uint16_t(error), 2);
     if (error == Error::ok)

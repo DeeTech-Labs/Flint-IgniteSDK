@@ -43,6 +43,11 @@ option(FLINT_PLATFORM_TESTS "Build local platform tests" ON)
 if(FLINT_PLATFORM_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME registry_validation COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_registry.py)
+    add_executable(resource_tests tests/resources.cpp)
+    target_link_libraries(resource_tests PRIVATE flint_platform)
+    add_test(NAME resource_rendering COMMAND resource_tests)
     add_executable(core_tests tests/core.cpp)
     target_link_libraries(core_tests PRIVATE flint_platform)
     add_test(NAME core_integration
@@ -128,3 +133,17 @@ install(FILES include/flint/graphics/fonts/Lato-LICENSE.txt
 install(DIRECTORY .github/assets/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/FlintIgniteSDK/.github/assets
     FILES_MATCHING PATTERN "readme-hero*.svg")
+
+if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(app_api_tests tests/app_api.cpp)
+    target_link_libraries(app_api_tests PRIVATE flint_platform)
+    add_test(NAME app_api COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_app_api.py $<TARGET_FILE:app_api_tests>)
+    set_tests_properties(app_api PROPERTIES TIMEOUT 20)
+endif()
+if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS AND FLINT_ENABLE_LUA)
+    add_test(NAME sdk_scenarios COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_scenarios.py
+        $<TARGET_FILE:ignite-run> $<TARGET_FILE:ignite-check>)
+    set_tests_properties(sdk_scenarios PROPERTIES TIMEOUT 30)
+endif()

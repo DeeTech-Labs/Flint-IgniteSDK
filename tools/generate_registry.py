@@ -7,7 +7,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def validate_services(services):
+    ids, names = set(), set()
+    for service in services:
+        ident, name = service["id"], service["name"]
+        if type(ident) is not int or not 1 <= ident <= 0xFFFF:
+            raise ValueError(f"invalid service ID: {ident!r}")
+        if not isinstance(name, str) or not name.isascii() or not name.isidentifier():
+            raise ValueError(f"invalid service name: {name!r}")
+        if ident in ids or name in names:
+            raise ValueError(f"duplicate service ID or name: {ident!r}, {name!r}")
+        if type(service["mutates"]) is not bool:
+            raise ValueError(f"mutates must be boolean: {name}")
+        ids.add(ident)
+        names.add(name)
+
+
 def main():
+    services = json.loads((ROOT / "spec/services.json").read_text(encoding="utf-8"))[
+        "services"
+    ]
+    validate_services(services)
     data = json.loads((ROOT / "spec/permissions.json").read_text(encoding="utf-8"))
     rows = []
     seen = set()
@@ -44,9 +64,6 @@ def main():
         ]
     )
     (ROOT / "include/flint/registry.h").write_text(registry)
-    services = json.loads((ROOT / "spec/services.json").read_text(encoding="utf-8"))[
-        "services"
-    ]
     lines = [
         "#pragma once",
         "// Generated from spec/services.json; do not edit.",

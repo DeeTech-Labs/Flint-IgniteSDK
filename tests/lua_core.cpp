@@ -10,7 +10,7 @@ using namespace flint;
         }                                                                                          \
     } while (false)
 int main(int argc, char **argv) {
-    CHECK(argc == 5);
+    CHECK(argc == 6);
     uint64_t now = 1000;
     Platform platform;
     platform.build_id = "lua-test";
@@ -30,6 +30,10 @@ int main(int argc, char **argv) {
     CHECK(core.tick());
     CHECK(core.scene(after) == Error::ok);
     CHECK(before.ops[1].y != after.ops[1].y);
+    Values overridden{{"app.score", "untrusted"}, {"app.dead", "untrusted"}};
+    CHECK(core.runtime().render(overridden, after) == Error::ok);
+    CHECK(std::string(reinterpret_cast<const char *>(after.data), after.used).find("untrusted") ==
+        std::string::npos);
     CHECK(core.runtime().suspend() == Error::ok);
     now += 66;
     core.tick();
@@ -43,6 +47,12 @@ int main(int argc, char **argv) {
     CHECK(core.tick());
     CHECK(core.runtime().manifest().id == "system.clock");
     CHECK(core.scene(after) == Error::ok);
+    CHECK(core.runtime().launch(
+              {{}, argv[5], false}, "main", platform.memory, platform.capabilities) == Error::ok);
+    core.tick(); // Drain pending recovery events before testing an unchanged update.
+    now += 66;
+    CHECK(!core.tick());
+    CHECK(core.runtime().state() == State::active);
     std::cout << "Lua scheduler, suspend, input permission and factory recovery: "
                  "passed\n";
 }

@@ -23,7 +23,7 @@ struct Reader {
     size_t pos{};
     bool valid{true};
     uint64_t n(unsigned bytes = 4) {
-        if (bytes > 8 || pos + bytes > data.size()) {
+        if (!valid || bytes > 8 || pos > data.size() || bytes > data.size() - pos) {
             valid = false;
             return 0;
         }
