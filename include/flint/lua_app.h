@@ -41,6 +41,7 @@ public:
     void stop();
     bool active() const;
     bool visualChanged() const;
+    static size_t nativeBytes();
     size_t used() const;
     size_t peak() const;
     std::span<const LuaValue> values() const;

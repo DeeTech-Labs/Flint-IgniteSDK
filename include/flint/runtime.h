@@ -62,6 +62,8 @@ class Runtime {
     uint64_t consumerGeneration_{};
     AppHost host_{};
     uint64_t capabilities_{};
+    std::function<MemoryBudget()> availableMemory_;
+    size_t nativeHeap_{}, nativePeak_{};
     bool loading_{}, focused_{true}, tickChanged_{}, pendingVisual_{};
     std::array<InputEvent, 16> inputs_{};
     size_t inputHead_{}, inputSize_{};
@@ -80,6 +82,16 @@ public:
     Error launch(const Installed &installed, std::string_view component, MemoryBudget available,
         uint64_t caps);
     Error update(uint32_t elapsedMs, bool pressed = false);
+    // Called only at launch; package validation always uses the stable platform limits.
+    void availableMemory(std::function<MemoryBudget()> callback) {
+        availableMemory_ = std::move(callback);
+    }
+    size_t nativeHeapEstimate() const {
+        return nativeHeap_;
+    }
+    size_t nativePeakEstimate() const {
+        return nativePeak_;
+    }
     void host(AppHost host) {
         host_ = host;
     }

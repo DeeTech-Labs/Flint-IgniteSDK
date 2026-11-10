@@ -57,6 +57,7 @@ Core::Core(std::string root, std::string factory, Platform platform)
         },
         [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); }, true});
     runtime_.resources().profilingClock(platform_.microseconds);
+    runtime_.availableMemory(platform_.available_memory);
 }
 Error Core::appCall(
     AppService service, std::string_view key, std::string_view value, AppReply &reply) {
@@ -776,8 +777,13 @@ void Core::advanceInstall() {
                     lastDiagnostic_ = runtime_.diagnostic();
                     lastLogicPackage_ = candidateId;
                     lastLogicComponent_ = component;
-                    packages_.rollback(candidateId);
-                    launch(candidateId, component);
+                    // Temporary heap pressure never invalidates a verified installed object.
+                    if (launchError != Error::resource_exhausted) {
+                        packages_.rollback(candidateId);
+                        launch(candidateId, component);
+                    } else {
+                        activateRole(Role::clock, "system.clock/main");
+                    }
                     if (error == Error::ok)
                         error = launchError;
                 }
@@ -895,6 +901,10 @@ Frame Core::handle(const Frame &request, Session &session) {
             }
             auto values = platform_.diagnostics ? platform_.diagnostics() : Values{};
             values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
+            values["runtime_resident_bytes"] = std::to_string(sizeof(Runtime));
+            values["runtime_native_heap_estimate"] = std::to_string(runtime_.nativeHeapEstimate());
+            values["runtime_native_peak_estimate"] = std::to_string(runtime_.nativePeakEstimate());
+            values["lua_impl_bytes"] = std::to_string(LuaApp::nativeBytes());
             values["lua_used_bytes"] = std::to_string(runtime_.logicUsed());
             values["lua_peak_bytes"] = std::to_string(runtime_.logicPeak());
             values["requests"] = std::to_string(requests_);

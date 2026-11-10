@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <flint/lua_app.h>
+#include <new>
 #ifdef FLINT_ENABLE_LUA
 extern "C" {
 #include "lauxlib.h"
@@ -409,6 +410,9 @@ bool LuaApp::active() const {
 bool LuaApp::visualChanged() const {
     return impl_ && impl_->changed;
 }
+size_t LuaApp::nativeBytes() {
+    return sizeof(Impl);
+}
 size_t LuaApp::used() const {
     return impl_ ? impl_->used : 0;
 }
@@ -430,7 +434,11 @@ Error LuaApp::load(std::string_view source, uint32_t memory, uint32_t instructio
         std::copy_n("invalid Lua source or limits", 28, diagnostic_.message.begin());
         return Error::invalid_argument;
     }
-    auto app = std::make_unique<Impl>();
+    auto app = std::unique_ptr<Impl>(new (std::nothrow) Impl);
+    if (!app) {
+        diagnostic_.error = Error::resource_exhausted;
+        return Error::resource_exhausted;
+    }
     app->host = host;
     app->diagnostic = &diagnostic_;
     app->clock = app->lastUpdate = host.monotonic ? host.monotonic(host.context) : 0;

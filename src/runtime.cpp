@@ -2,8 +2,20 @@
 #include <flint/registry.h>
 #include <flint/runtime.h>
 namespace flint {
+static size_t manifestHeapEstimate(const Manifest &m) {
+    size_t bytes = m.id.capacity() + m.name.capacity() + m.publisher.capacity() + 3;
+    bytes += m.permissions.capacity() * sizeof(Declaration) +
+        m.components.capacity() * sizeof(ComponentInfo);
+    for (const auto &d : m.permissions)
+        bytes += d.permission.capacity() + d.scope.capacity() + 2;
+    for (const auto &c : m.components)
+        bytes += c.id.capacity() + 1;
+    return bytes;
+}
 Error Runtime::launch(
     const Installed &installed, std::string_view id, MemoryBudget available, uint64_t caps) {
+    if (availableMemory_ && !fits(installed.manifest.budget, availableMemory_()))
+        return Error::resource_exhausted;
     File candidate;
     if (!candidate.open(installed.path))
         return Error::io_error;
@@ -21,12 +33,14 @@ Error Runtime::launchPrepared(
     PreparedInstall &prepared, std::string_view id, MemoryBudget available, uint64_t caps) {
     if (!prepared.ready() || !prepared.committed())
         return Error::invalid_state;
+    if (availableMemory_ && !fits(prepared.manifest().budget, availableMemory_()))
+        return Error::resource_exhausted;
     return launchValidated(
         prepared.file(), prepared.package(), prepared.releaseManifest(), id, available, caps);
 }
 Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::string_view id,
     MemoryBudget available, uint64_t caps) {
-    if (!fits(m.budget, available))
+    if (!fits(m.budget, available) || (availableMemory_ && !fits(m.budget, availableMemory_())))
         return Error::resource_exhausted;
     if ((m.capabilities & caps) != m.capabilities)
         return Error::not_supported;
@@ -111,7 +125,12 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
             start = end + 1;
         }
     }
+    const auto nativeManifest = manifestHeapEstimate(m) + component.id.capacity() + 1;
+    const auto sceneBytes = bytes.capacity();
+    Bytes{}.swap(bytes);
     stop();
+    nativeHeap_ = nativeManifest;
+    nativePeak_ = nativeManifest + sceneBytes;
     bindingEnds_ = bindingEnds;
     file_ = std::move(candidate);
     package_ = std::move(p);
@@ -128,6 +147,16 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
         package_.entry(i, code);
         if (code.type != Section::lua)
             continue;
+        const auto nativeLoad = nativeManifest + LuaApp::nativeBytes() + code.size;
+        // Preserve the existing Lua heap ceiling while charging native state and source peak.
+        if (nativeLoad + 16 * 1024 > manifest_.budget.internal_bytes) {
+            stop();
+            return Error::resource_exhausted;
+        }
+        const auto luaLimit = std::min<size_t>(manifest_.budget.internal_bytes - 16 * 1024,
+            manifest_.budget.internal_bytes - nativeLoad);
+        nativeHeap_ = nativeManifest + LuaApp::nativeBytes();
+        nativePeak_ = std::max<size_t>(nativePeak_, nativeLoad);
         Bytes source(code.size);
         error = package_.read(code, 0, source);
         loading_ = true;
@@ -143,16 +172,10 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
             bool(manifest_.capabilities & CapAppApi)};
         if (error == Error::ok)
             error = lua_.load({reinterpret_cast<const char *>(source.data()), source.size()},
-                manifest_.budget.internal_bytes - 16 * 1024, manifest_.budget.instructions,
-                template_, bridge);
+                uint32_t(luaLimit), manifest_.budget.instructions, template_, bridge);
         loading_ = false;
         if (error != Error::ok) {
-            lua_.stop();
-            resources_.bind(nullptr);
-            package_.close();
-            file_.close();
-            manifest_ = {};
-            component_ = {};
+            stop();
             return error;
         }
     }
@@ -183,11 +206,18 @@ Error Runtime::update(uint32_t elapsedMs, bool pressed) {
 }
 Error Runtime::stop() {
     lua_.stop();
+    nativeHeap_ = nativePeak_ = 0;
     inputHead_ = inputSize_ = 0;
     tickChanged_ = pendingVisual_ = false;
     loading_ = false;
-    if (lifecycle_.state == State::empty)
+    if (lifecycle_.state == State::empty) {
+        resources_.bind(nullptr);
+        package_.close();
+        file_.close();
+        manifest_ = {};
+        component_ = {};
         return Error::ok;
+    }
     if (lifecycle_.state == State::active)
         lifecycle_.dispatch(Lifecycle::deactivate);
     lifecycle_.dispatch(Lifecycle::destroy);
@@ -195,6 +225,7 @@ Error Runtime::stop() {
     package_.close();
     file_.close();
     manifest_ = {};
+    component_ = {};
     ++generation_;
     ++consumerGeneration_;
     return Error::ok;

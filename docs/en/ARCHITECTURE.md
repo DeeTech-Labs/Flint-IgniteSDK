@@ -163,3 +163,11 @@ factory directory. An available but corrupt factory catalog is never ignored.
 Atomic filesystem metadata operations, durable writes, metadata garbage collection
 and rare rollback/recovery paths remain synchronous. A byte quantum is not a strict
 wall-clock guarantee on slow or failed media. Board stress validation is required.
+
+## Memory budgets and launch
+
+`Platform::memory` defines stable package admissibility. Do not populate it with current free heap: temporary memory pressure must not hide an installed package or trigger rollback. Optional `available_memory` is checked by Runtime at launch only, separately for internal RAM and PSRAM. Failure returns `resource_exhausted`, preserving the catalog and the previous app until ownership transfer. A verified installed update is not rolled back solely because activation runs out of memory; Core attempts the factory clock and records the launch error.
+
+The Lua heap still cannot exceed `declared internal - 16 KiB`. The declaration additionally reserves estimated native manifest/component allocations, `LuaApp::Impl` (including published values), and Lua source at the loading peak. The Lua heap is reduced when necessary; its 16 KiB minimum remains. An older package whose actual native peak exceeds its declaration may now fail launch; package format and ContractRevision remain unchanged. Impl allocation failure is explicit, and failed launch releases the file and resources even before lifecycle.create.
+
+Diagnostics distinguish `runtime_resident_bytes` (fixed Runtime, including ResourceManager and its buffers, already included in the platform baseline), native heap/peak estimates, and Lua used/peak. STL capacity estimates exclude allocator headers, fragmentation, stack, validation/scene bindings and hardware queues. The adapter must measure the full peak and largest free block; estimates do not guarantee total RAM.

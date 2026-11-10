@@ -13,7 +13,9 @@ inline constexpr uint64_t HostLogicCapabilities = 0;
 #endif
 struct Platform {
     std::string build_id;
+    // Stable package admissibility limit, independent of temporary heap pressure.
     MemoryBudget memory{48 * 1024, 0, 4096};
+    std::function<MemoryBudget()> available_memory;
     uint64_t capabilities{CapDeclarative | CapResources | CapPackages | CapMetrics |
         HostLogicCapabilities | CapCompanionDemand | CapSessionClose};
     std::function<uint64_t()> monotonic;

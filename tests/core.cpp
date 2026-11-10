@@ -47,7 +47,9 @@ int main(int argc, char **argv) {
     CHECK(argc == 2);
     std::string root = argv[1];
     uint64_t tick = 1000;
+    bool lowMemory = false;
     Platform platform;
+    platform.available_memory = [&] { return lowMemory ? MemoryBudget{} : platform.memory; };
     platform.build_id = "host-tests";
     platform.monotonic = [&] { return tick; };
     uint64_t profileClock = 0;
@@ -138,6 +140,13 @@ int main(int argc, char **argv) {
     CHECK(chunk(v1, 100, v1.size() - 100) == Error::ok);
     CHECK(request(Method::install_commit) == Error::ok);
     CHECK(core.packages().list().size() == 7);
+    lowMemory = true;
+    CHECK(core.launch("test.monitor", "main") == Error::resource_exhausted);
+    CHECK(core.runtime().manifest().id == "system.clock");
+    CHECK(core.packages().list().size() == 7);
+    CHECK(core.packages().begin() == Error::ok);
+    CHECK(core.packages().list().size() == 7);
+    lowMemory = false;
     CHECK(core.launch("test.monitor", "main") == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU") == std::string::npos);
