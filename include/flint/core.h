@@ -2,6 +2,7 @@
 #include "diagnostics.h"
 #include "protocol.h"
 #include "runtime.h"
+#include <optional>
 namespace flint {
 inline constexpr uint64_t CapDeclarative = 1, CapResources = 2, CapPackages = 4, CapMetrics = 8,
                           CapUsb = 16, CapBle = 32;
@@ -14,7 +15,7 @@ struct Platform {
     std::string build_id;
     MemoryBudget memory{48 * 1024, 0, 4096};
     uint64_t capabilities{CapDeclarative | CapResources | CapPackages | CapMetrics |
-        HostLogicCapabilities | CapCompanionDemand};
+        HostLogicCapabilities | CapCompanionDemand | CapSessionClose};
     std::function<uint64_t()> monotonic;
     std::function<uint64_t()> free_storage;
     std::function<Values()> diagnostics;
@@ -23,6 +24,7 @@ struct Platform {
     std::function<Error(std::string_view, AppReply &)> power;
     // Optional profiling clock in microseconds; independent of scheduling in milliseconds.
     std::function<uint64_t()> microseconds;
+    bool require_factory{};
 };
 struct Session {
     bool authenticated{}, compatible{};
@@ -52,7 +54,7 @@ class Core {
     };
     std::array<CompanionSubscriber, 4> companionSubscribers_{};
     uint64_t demandGeneration_{1}, demandRuntime_{~uint64_t(0)}, demandCatalog_{~uint64_t(0)},
-        boundProvider_{}, boundGeneration_{}, sampleAt_{};
+        boundProvider_{}, boundGeneration_{}, sampleAt_{}, boundAt_{};
     CompanionDemand demand_{CompanionDemand::no_consumer};
     bool sampleReceived_{};
     void refreshCompanionDemand();
@@ -69,7 +71,7 @@ class Core {
     Error persistSettings();
     Error persistGrants();
     Error revokePackage(std::string_view id);
-    void refreshProviders(std::string_view id, bool removed);
+    void refreshProviders(std::string_view id, bool removed, PreparedInstall *prepared = nullptr);
     Principal metricPrincipal_{};
     uint64_t metricRuntime_{~uint64_t(0)}, metricCatalog_{~uint64_t(0)};
     bool metricIdentityValid_{}, metricFactory_{};
@@ -83,12 +85,23 @@ class Core {
     bool bindingsDirty_{true}, bindingsMetrics_{};
     Timing requestTiming_, logicTiming_, sceneTiming_, paintTiming_;
     uint64_t requests_{}, requestErrors_{}, metricRequests_{};
+    std::unique_ptr<PreparedInstall> install_;
+    Frame installRequest_;
+    std::optional<Frame> installReply_;
+    uint64_t installOwner_{}, installSteps_{};
+    Timing installTiming_;
+    Error beginInstall(const Frame &request, const Session &session);
+    void advanceInstall();
     const Values &bindings();
 
 public:
     Core(std::string storage, std::string factory, Platform platform);
     Error begin();
     Frame handle(const Frame &request, Session &session);
+    // Owner-thread dispatch: a deferred install reply is delivered by takeReply().
+    std::optional<Frame> process(const Frame &request, Session &session);
+    bool takeReply(const Session &session, Frame &reply);
+    bool replyReady(const Session &session) const;
     Error launch(std::string_view id, std::string_view component);
     Error scene(FlintRender::Scene &scene);
     void paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas);

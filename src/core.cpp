@@ -1,3 +1,4 @@
+#include <charconv>
 #include <cmath>
 #include <ctime>
 #include <flint/core.h>
@@ -47,7 +48,8 @@ static uint64_t generation(const Installed &p) {
 }
 Core::Core(std::string root, std::string factory, Platform platform)
     : platform_(std::move(platform)),
-      packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities) {
+      packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities,
+          platform_.require_factory) {
     runtime_.host({this,
         [](void *context, AppService service, std::string_view key, std::string_view value,
             AppReply &reply) {
@@ -106,9 +108,11 @@ Error Core::appCall(
 }
 uint64_t Core::nextWake() const {
     const auto at = platform_.monotonic();
-    if (!events_.empty())
+    if (install_ || !events_.empty())
         return at;
     auto next = runtime_.nextWake();
+    if (boundProvider_ && boundAt_ <= UINT64_MAX - CompanionTtlMs)
+        next = std::min(next, boundAt_ + CompanionTtlMs);
     if (epoch_ && at >= base_) {
         const auto minuteDelay = (60 - now() % 60) * 1000 - (at - base_) % 1000;
         if (minuteDelay <= UINT64_MAX - at)
@@ -155,7 +159,7 @@ Error Core::revokePackage(std::string_view id) {
     companion_.valid = false;
     return result;
 }
-void Core::refreshProviders(std::string_view id, bool removed) {
+void Core::refreshProviders(std::string_view id, bool removed, PreparedInstall *prepared) {
     bindingsDirty_ = true;
     for (const auto role : {Role::theme, Role::locale}) {
         const auto key = "role" + std::to_string(unsigned(role));
@@ -166,6 +170,18 @@ void Core::refreshProviders(std::string_view id, bool removed) {
         if (removed) {
             settings_.erase(key);
             persistSettings();
+        }
+        if (!removed && prepared) {
+            bool loaded = false;
+            const auto componentId = std::string_view(selected->second).substr(id.size() + 1);
+            for (const auto &component : prepared->manifest().components)
+                if (component.id == componentId) {
+                    auto &values = role == Role::theme ? theme_ : locale_;
+                    loaded = loadValues(prepared->package(), component, values) == Error::ok;
+                    break;
+                }
+            if (loaded)
+                continue;
         }
         activateRole(role);
     }
@@ -325,6 +341,15 @@ bool Core::canReceiveMetrics(uint64_t providerSession) {
     return false;
 }
 void Core::refreshCompanionDemand() {
+    const auto at = platform_.monotonic();
+    if (boundProvider_ && (at < boundAt_ || at - boundAt_ >= CompanionTtlMs)) {
+        boundProvider_ = boundGeneration_ = 0;
+        sampleReceived_ = false;
+        companion_.valid = false;
+        bindingsDirty_ = true;
+        ++demandGeneration_;
+        events_.post({2, 0, runtime_.generation()});
+    }
     bool declared = false;
     if (runtime_.state() == State::active)
         for (const auto &permission : runtime_.manifest().permissions)
@@ -434,6 +459,8 @@ Error Core::handleCompanion(Method method, Reader &in, Session &session) {
     if (boundProvider_ && boundProvider_ != session.id)
         return Error::invalid_state;
     if (method == Method::companion_bind) {
+        if (!boundProvider_ || boundGeneration_ != generation)
+            boundAt_ = platform_.monotonic();
         boundProvider_ = session.id;
         boundGeneration_ = generation;
         return Error::ok;
@@ -463,11 +490,13 @@ Error Core::receiveMetrics(Reader &in, const Session &session) {
         return Error::quota_exceeded;
     companion_ = {cpu / 100.0, ram / 100.0, at, session.id, runtime_.consumerGeneration(), true};
     boundProvider_ = session.id;
+    boundAt_ = at;
     sampleReceived_ = true;
     sampleAt_ = at;
     return Error::ok;
 }
 bool Core::tick() {
+    advanceInstall();
     refreshCompanionDemand();
     const auto at = platform_.monotonic();
     bool logicDirty = false;
@@ -663,6 +692,11 @@ void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     FlintRender::resourceImage = nullptr;
 }
 void Core::disconnect(Session &session) {
+    if (installOwner_ == session.id) {
+        install_.reset();
+        installReply_.reset();
+        installOwner_ = 0;
+    }
     for (auto &g : grants_)
         if (g.session == session.id && g.session)
             g.enabled = false;
@@ -680,6 +714,124 @@ void Core::disconnect(Session &session) {
         bindingsDirty_ = true;
         events_.post({4, 0, runtime_.generation()});
     }
+}
+static Frame errorReply(const Frame &request, Error error) {
+    Writer payload;
+    payload.n(uint16_t(error), 2);
+    return {request.method, request.id, true, std::move(payload.data)};
+}
+Error Core::beginInstall(const Frame &request, const Session &session) {
+    if (install_ || installReply_)
+        return Error::invalid_state;
+    if (!session.id)
+        return Error::permission_denied;
+    if (!request.payload.empty())
+        return Error::invalid_argument;
+    const auto meta = readText(packages_.staging() + ".meta", 100);
+    const auto separator = meta.find(':');
+    if (separator == std::string::npos)
+        return Error::invalid_state;
+    uint32_t total = 0;
+    const auto parsed = std::from_chars(meta.data(), meta.data() + separator, total);
+    if (parsed.ec != std::errc{} || parsed.ptr != meta.data() + separator || !total ||
+        total > MaxPackageBytes)
+        return Error::invalid_state;
+    const auto error =
+        packages_.prepareCommit(install_, std::string_view(meta).substr(separator + 1), total);
+    if (error != Error::ok)
+        return error;
+    installOwner_ = session.id;
+    installRequest_ = {request.method, request.id, false, {}};
+    return Error::ok;
+}
+void Core::advanceInstall() {
+    if (!install_)
+        return;
+    TimingScope timing(platform_.microseconds, installTiming_);
+    ++installSteps_;
+    auto error = install_->advance(4096);
+    if (error == Error::ok && !install_->ready())
+        return;
+    std::string installedId;
+    if (error == Error::ok) {
+        const auto candidateId = install_->manifest().id;
+        error = revokePackage(candidateId);
+        if (error == Error::ok) {
+            const bool active = runtime_.manifest().id == candidateId;
+            const auto component = runtime_.component().id;
+            if (active)
+                runtime_.stop();
+            error = packages_.commit(*install_, installedId);
+            if (error == Error::ok) {
+                unlink((packages_.staging() + ".meta").c_str());
+                refreshProviders(installedId, false, install_.get());
+            }
+            if (active) {
+                const auto launchError = error == Error::ok
+                    ? runtime_.launchPrepared(
+                          *install_, component, platform_.memory, platform_.capabilities)
+                    : launch(candidateId, component);
+                if (launchError != Error::ok) {
+                    lastLogicError_ = launchError;
+                    lastDiagnostic_ = runtime_.diagnostic();
+                    lastLogicPackage_ = candidateId;
+                    lastLogicComponent_ = component;
+                    packages_.rollback(candidateId);
+                    launch(candidateId, component);
+                    if (error == Error::ok)
+                        error = launchError;
+                }
+            }
+        }
+    }
+    auto reply = errorReply(installRequest_, error);
+    if (error == Error::ok) {
+        Writer payload;
+        payload.raw(reply.payload);
+        payload.text(installedId);
+        reply.payload = std::move(payload.data);
+        bindingsDirty_ = true;
+        events_.post({4, 0, runtime_.generation()});
+    } else
+        ++requestErrors_;
+    installReply_ = std::move(reply);
+    install_.reset();
+    refreshCompanionDemand();
+}
+std::optional<Frame> Core::process(const Frame &request, Session &session) {
+    if (request.method != Method::install_commit)
+        return handle(request, session);
+    TimingScope timing(platform_.microseconds, requestTiming_);
+    ++requests_;
+    Error error = Error::ok;
+    if (request.reply || !request.id || !request.payload.empty())
+        error = Error::invalid_argument;
+    else if (!session.authenticated)
+        error = Error::permission_denied;
+    else if (!session.compatible)
+        error = Error::incompatible_contract;
+    else if ((install_ || installReply_) && installOwner_ == session.id &&
+        installRequest_.id == request.id) {
+        Frame reply;
+        return takeReply(session, reply) ? std::optional<Frame>(std::move(reply)) : std::nullopt;
+    } else
+        error = beginInstall(request, session);
+    if (error == Error::ok)
+        return std::nullopt;
+    ++requestErrors_;
+    return errorReply(request, error);
+}
+bool Core::replyReady(const Session &session) const {
+    return installReply_ && session.id && session.authenticated && session.compatible &&
+        session.id == installOwner_;
+}
+bool Core::takeReply(const Session &session, Frame &reply) {
+    if (!replyReady(session))
+        return false;
+    reply = std::move(*installReply_);
+    installReply_.reset();
+    installOwner_ = 0;
+    return true;
 }
 Frame Core::handle(const Frame &request, Session &session) {
     refreshCompanionDemand();
@@ -716,8 +868,21 @@ Frame Core::handle(const Frame &request, Session &session) {
         fail(Error::permission_denied);
     else if (!session.compatible)
         fail(Error::incompatible_contract);
+    else if (install_ &&
+        (request.method == Method::install_begin || request.method == Method::install_chunk ||
+            request.method == Method::install_commit || request.method == Method::remove ||
+            request.method == Method::rollback || request.method == Method::recover))
+        fail(Error::invalid_state);
     else
         switch (request.method) {
+        case Method::session_close:
+            if (!(platform_.capabilities & CapSessionClose))
+                error = Error::not_supported;
+            else if (!in.done())
+                error = Error::invalid_argument;
+            else
+                disconnect(session);
+            break;
         case Method::companion_subscribe:
         case Method::companion_bind:
         case Method::companion_sample:
@@ -735,6 +900,8 @@ Frame Core::handle(const Frame &request, Session &session) {
             values["requests"] = std::to_string(requests_);
             values["request_errors"] = std::to_string(requestErrors_);
             values["metrics_requests"] = std::to_string(metricRequests_);
+            values["install_steps"] = std::to_string(installSteps_);
+            values["install_active"] = install_ ? "1" : "0";
             values["event_queue_peak"] = std::to_string(events_.peak());
             values["event_queue_overflows"] = std::to_string(events_.overflows());
             const auto addTiming = [&](const char *name, const Timing &sample) {
@@ -744,6 +911,7 @@ Frame Core::handle(const Frame &request, Session &session) {
             };
             if (platform_.microseconds) {
                 addTiming("request", requestTiming_);
+                addTiming("install_step", installTiming_);
                 addTiming("logic", logicTiming_);
                 addTiming("scene", sceneTiming_);
                 addTiming("paint", paintTiming_);
@@ -941,70 +1109,14 @@ Frame Core::handle(const Frame &request, Session &session) {
             break;
         }
         case Method::install_commit: {
-            if (!in.done()) {
-                fail(Error::invalid_argument);
-                break;
-            }
-            auto path = packages_.staging();
-            auto meta = readText(path + ".meta", 100);
-            auto split = meta.find(':');
-            File file;
-            if (split == std::string::npos || !file.open(path) ||
-                file.size != strtoul(meta.substr(0, split).c_str(), nullptr, 10)) {
-                fail(Error::invalid_state);
-                break;
-            }
-            Sha256 hash;
-            std::array<uint8_t, 256> buffer{};
-            for (uint32_t offset = 0; offset < file.size;) {
-                auto count = std::min<uint32_t>(buffer.size(), file.size - offset);
-                auto bytes = std::span(buffer).first(count);
-                if (!file.source().read(&file, offset, bytes)) {
-                    fail(Error::io_error);
-                    break;
-                }
-                hash.update(bytes);
-                offset += count;
-            }
-            file.close();
-            std::string digest;
-            const char *hex = "0123456789abcdef";
-            for (auto b : hash.finish()) {
-                digest += hex[b >> 4];
-                digest += hex[b & 15];
-            }
-            if (error != Error::ok)
-                break;
-            if (digest != meta.substr(split + 1)) {
-                fail(Error::integrity_failed);
-                break;
-            }
-            Manifest candidate;
-            error = packages_.inspect(path, candidate);
-            if (error != Error::ok)
-                break;
-            error = revokePackage(candidate.id);
-            if (error != Error::ok) {
-                break;
-            }
-            bool active = runtime_.manifest().id == candidate.id;
-            std::string component = runtime_.component().id, id;
-            if (active)
-                runtime_.stop();
-            error = packages_.commit(path, id);
+            error = beginInstall(request, session);
             if (error == Error::ok) {
-                unlink((path + ".meta").c_str());
-                refreshProviders(id, false);
-                out.text(id);
-            }
-            if (active) {
-                auto launchError = launch(candidate.id, component);
-                if (launchError != Error::ok) {
-                    packages_.rollback(candidate.id);
-                    launch(candidate.id, component);
-                    if (error == Error::ok)
-                        error = launchError;
-                }
+                while (install_)
+                    advanceInstall();
+                Frame result;
+                if (takeReply(session, result))
+                    return result;
+                error = Error::invalid_state;
             }
             break;
         }
@@ -1279,7 +1391,8 @@ Frame Core::handle(const Frame &request, Session &session) {
         request.method != Method::permissions_get && request.method != Method::settings_get &&
         request.method != Method::diagnostics && request.method != Method::companion_subscribe &&
         request.method != Method::companion_bind && request.method != Method::hello &&
-        request.method != Method::install_chunk && request.method != Method::install_begin) {
+        request.method != Method::install_chunk && request.method != Method::install_begin &&
+        request.method != Method::session_close) {
         bindingsDirty_ = true;
         events_.post({4, 0, runtime_.generation()});
     }

@@ -5,14 +5,9 @@
 namespace flint {
 Error loadManifest(Package &package, Manifest &out) {
     Entry manifestEntry{};
-    for (uint32_t i = 0; i < package.count(); ++i) {
-        Entry e;
-        auto error = package.entry(i, e);
-        if (error != Error::ok)
-            return error;
-        if (e.type == Section::manifest)
-            manifestEntry = e;
-    }
+    const auto manifestError = package.manifest(manifestEntry);
+    if (manifestError != Error::ok)
+        return manifestError;
     if (!manifestEntry.size || manifestEntry.size > MaxManifestBytes)
         return Error::invalid_package;
     Bytes bytes(manifestEntry.size);
@@ -56,14 +51,9 @@ Error loadManifest(Package &package, Manifest &out) {
         if (!identifier(c.id) || !ids.insert(c.id).second || uint16_t(c.type) < 1 ||
             uint16_t(c.type) > 8 || uint8_t(c.role) > 5)
             return Error::invalid_package;
-        bool found = false;
-        for (uint32_t j = 0; j < package.count(); ++j) {
-            Entry e;
-            package.entry(j, e);
-            if (e.id == c.section && e.type != Section::manifest && e.type != Section::signature)
-                found = true;
-        }
-        if (!found)
+        Package::View section;
+        if (package.view(c.section, section) != Error::ok ||
+            section.info().type == Section::manifest || section.info().type == Section::signature)
             return Error::invalid_package;
         m.components.push_back(std::move(c));
     }
@@ -72,60 +62,105 @@ Error loadManifest(Package &package, Manifest &out) {
     out = std::move(m);
     return Error::ok;
 }
-Error validateApplication(Package &package, Manifest &m, MemoryBudget available, uint64_t caps) {
+Error ApplicationValidation::begin(
+    Package &package, Manifest &m, MemoryBudget available, uint64_t caps) {
+    *this = {};
+    package_ = &package;
+    manifest_ = &m;
+    generation_ = package.generation_;
+    capabilities_ = caps;
     auto error = loadManifest(package, m);
     if (error != Error::ok)
-        return error;
+        return fail(error);
     if ((m.capabilities & caps) != m.capabilities)
-        return Error::not_supported;
+        return fail(Error::not_supported);
     bool hasUi = false;
     for (const auto &component : m.components) {
         hasUi = hasUi || component.type == Component::app ||
             component.type == Component::watchface || component.type == Component::widget ||
             component.type == Component::complication;
-        if (component.type == Component::service) {
-            return Error::not_supported;
-        }
+        if (component.type == Component::service)
+            return fail(Error::not_supported);
     }
-    if (hasUi && m.budget.internal_bytes < 16 * 1024) {
-        return Error::quota_exceeded;
-    }
+    if (hasUi && m.budget.internal_bytes < 16 * 1024)
+        return fail(Error::quota_exceeded);
     if (!fits(m.budget, available))
-        return Error::resource_exhausted;
-    [[maybe_unused]] unsigned luaCount = 0;
-    for (uint32_t i = 0; i < package.count(); ++i) {
-        Entry e;
-        package.entry(i, e);
-        if (e.type == Section::lua) {
+        return fail(Error::resource_exhausted);
+    error_ = Error::ok;
+    return Error::ok;
+}
+Error ApplicationValidation::advance(uint32_t budget) {
+    if (done_)
+        return error_;
+    if (!package_ || !manifest_ || !budget)
+        return Error::invalid_argument;
+    if (!package_->valid_ || generation_ != package_->generation_)
+        return fail(Error::stale_handle);
+    if (content_.empty()) {
+        if (index_ == package_->count()) {
+            Bytes{}.swap(content_);
+            done_ = true;
+            return Error::ok;
+        }
+        const auto error = package_->entry(index_++, entry_);
+        if (error != Error::ok)
+            return fail(error);
+        [[maybe_unused]] const auto &m = *manifest_;
+        if (entry_.type == Section::lua) {
 #ifndef FLINT_ENABLE_LUA
-            return Error::not_supported;
+            return fail(Error::not_supported);
 #else
-            if (++luaCount > 1 || m.components.size() != 1 ||
+            if (++luaCount_ > 1 || m.components.size() != 1 ||
                 (m.components[0].type != Component::app &&
                     m.components[0].type != Component::watchface) ||
-                !(m.capabilities & CapLua) || !(caps & CapLua))
-                return Error::not_supported;
-            if (e.size > MaxLuaSourceBytes || m.budget.internal_bytes < 48 * 1024 ||
+                !(m.capabilities & CapLua) || !(capabilities_ & CapLua))
+                return fail(Error::not_supported);
+            if (entry_.size > MaxLuaSourceBytes || m.budget.internal_bytes < 48 * 1024 ||
                 m.budget.internal_bytes > 144 * 1024 || !m.budget.instructions ||
                 m.budget.instructions > 100000)
-                return Error::quota_exceeded;
-            Bytes code(e.size);
-            if (package.read(e, 0, code) != Error::ok || code[0] == 0x1b ||
-                std::find(code.begin(), code.end(), 0) != code.end())
-                return Error::invalid_package;
+                return fail(Error::quota_exceeded);
 #endif
+        } else if (entry_.type == Section::ui) {
+            if (entry_.size > FlintRender::MaxEncoded)
+                return fail(Error::quota_exceeded);
+        } else {
+            return Error::ok;
         }
-        if (e.type == Section::ui) {
-            if (e.size > FlintRender::MaxEncoded)
-                return Error::quota_exceeded;
-            Bytes b(e.size);
-            FlintRender::Scene scene;
-            if (package.read(e, 0, b) != Error::ok ||
-                (!FlintRender::decode(b.data(), b.size(), scene) || scene.width != 280 ||
-                    scene.height != 240))
-                return Error::invalid_package;
-        }
+        content_.resize(entry_.size);
+        offset_ = 0;
+    }
+    const auto count = std::min<uint32_t>(budget, entry_.size - offset_);
+    Package::View section;
+    auto error = package_->view(entry_.id, section);
+    if (error == Error::ok)
+        error = section.read(offset_, std::span(content_).subspan(offset_, count));
+    if (error != Error::ok)
+        return fail(error);
+    offset_ += count;
+    if (offset_ != entry_.size)
+        return Error::ok;
+    if (entry_.type == Section::lua) {
+        if (content_[0] == 0x1b || std::find(content_.begin(), content_.end(), 0) != content_.end())
+            return fail(Error::invalid_package);
+    } else {
+        FlintRender::Scene scene;
+        if (!FlintRender::decode(content_.data(), content_.size(), scene) || scene.width != 280 ||
+            scene.height != 240)
+            return fail(Error::invalid_package);
+    }
+    content_.clear();
+    if (index_ == package_->count()) {
+        Bytes{}.swap(content_);
+        done_ = true;
     }
     return Error::ok;
+}
+Error validateApplication(
+    Package &package, Manifest &manifest, MemoryBudget available, uint64_t caps) {
+    ApplicationValidation validation;
+    auto error = validation.begin(package, manifest, available, caps);
+    while (error == Error::ok && !validation.done())
+        error = validation.advance(4096);
+    return error;
 }
 } // namespace flint

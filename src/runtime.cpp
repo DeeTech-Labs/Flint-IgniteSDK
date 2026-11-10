@@ -15,6 +15,22 @@ Error Runtime::launch(
     error = validateApplication(p, m, available, caps);
     if (error != Error::ok)
         return error;
+    return launchValidated(candidate, p, std::move(m), id, available, caps);
+}
+Error Runtime::launchPrepared(
+    PreparedInstall &prepared, std::string_view id, MemoryBudget available, uint64_t caps) {
+    if (!prepared.ready() || !prepared.committed())
+        return Error::invalid_state;
+    return launchValidated(
+        prepared.file(), prepared.package(), prepared.releaseManifest(), id, available, caps);
+}
+Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::string_view id,
+    MemoryBudget available, uint64_t caps) {
+    if (!fits(m.budget, available))
+        return Error::resource_exhausted;
+    if ((m.capabilities & caps) != m.capabilities)
+        return Error::not_supported;
+    auto error = Error::ok;
     bool canRender = false;
     for (auto &d : m.permissions)
         if (d.permission == "ui.render")
@@ -97,13 +113,10 @@ Error Runtime::launch(
     }
     stop();
     bindingEnds_ = bindingEnds;
-    if (!file_.open(installed.path))
-        return Error::io_error;
-    error = package_.open(file_.source());
-    if (error != Error::ok) {
-        file_.close();
-        return error;
-    }
+    file_ = std::move(candidate);
+    package_ = std::move(p);
+    package_.relocate(file_.source());
+    p.close();
     manifest_ = std::move(m);
     component_ = std::move(component);
     template_ = scene;
@@ -440,17 +453,13 @@ Error loadValues(const Installed &installed, const ComponentInfo &component, Val
     auto error = p.open(file.source());
     if (error != Error::ok)
         return error;
-    Entry e;
-    bool found = false;
-    for (uint32_t i = 0; i < p.count(); ++i) {
-        p.entry(i, e);
-        if (e.id == component.section) {
-            found = true;
-            break;
-        }
-    }
-    if (!found || e.size > 4096)
+    return loadValues(p, component, values);
+}
+Error loadValues(Package &p, const ComponentInfo &component, Values &values) {
+    Package::View section;
+    if (p.view(component.section, section) != Error::ok || section.info().size > 4096)
         return Error::invalid_package;
+    const auto e = section.info();
     Bytes bytes(e.size);
     if (p.read(e, 0, bytes) != Error::ok)
         return Error::io_error;

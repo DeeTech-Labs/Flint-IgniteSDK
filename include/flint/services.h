@@ -35,6 +35,7 @@ inline constexpr ServiceDescriptor ServiceRegistry[]{
     ServiceDescriptor{Method::companion_bind, "companion_bind", true},
     ServiceDescriptor{Method::companion_sample, "companion_sample", true},
     ServiceDescriptor{Method::companion_state, "companion_state", false},
+    ServiceDescriptor{Method::session_close, "session_close", true},
 };
 
 static_assert(uint16_t(Method::hello) == 1);
@@ -62,4 +63,5 @@ static_assert(uint16_t(Method::companion_subscribe) == 22);
 static_assert(uint16_t(Method::companion_bind) == 23);
 static_assert(uint16_t(Method::companion_sample) == 24);
 static_assert(uint16_t(Method::companion_state) == 25);
+static_assert(uint16_t(Method::session_close) == 26);
 } // namespace flint

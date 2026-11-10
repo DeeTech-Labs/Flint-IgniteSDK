@@ -126,3 +126,40 @@ Diagnostics do not dirty the scene. Replies fit MaxPayload and 128 fields, prior
 Lua fault details, and mark omitted optional fields with `diagnostics_truncated=1`.
 Python clients accept numeric and textual values. C++ class sizes changed: rebuild
 SDK and consumers together. Wire/package ContractRevision remains unchanged.
+
+
+## Resumable installation verification
+
+Adapters use `Core::process`, `tick`, `replyReady` and `takeReply` on one owner.
+`install_commit` may defer its existing reply (same method, request ID and payload)
+until validation and publication complete. `Core::handle` remains the synchronous
+native interface. Wire, package and `incoming.part.meta` formats stay unchanged.
+
+Core holds one pending installation and one result slot. Index/hash verification
+reads at most 4096 bytes per tick. Lua/UI sections are read in chunks; each step
+decodes at most one bounded scene. Header, manifest and reference validation have
+separate fixed bounds. Runtime, input and other clients continue between steps;
+catalog mutations and further upload chunks return `invalid_state`. Application
+switching remains allowed; restart requirements are decided at publication.
+
+Owner disconnect cancels unfinished verification and closes files while retaining
+staging/metadata for resume. Once publication commits, disconnect only discards an
+undelivered reply; reconnecting clients must inspect the catalog. Flare cancels by
+disconnecting, waits up to 45 seconds for commit and reports completion only after
+success.
+
+`PreparedInstall` binds proof to an open immutable file and PackageManager revision.
+Publication checks the revision, original reference, open-file version and staging
+object identity. Windows read handles deny writes and permit transfer into
+content-addressed storage; POSIX also compares inode/device. Storage has one owner;
+external changes must invalidate proof. LittleFS lacks complete host file IDs, so
+Core/hardware adapters prohibit concurrent staging writes.
+
+Runtime adopts the same verified open file without a second full SHA-256 pass.
+Permissions are never cached. Factory/current packages use resumable validators.
+Firmware sets `Platform::require_factory=true`; standalone simulation may omit a
+factory directory. An available but corrupt factory catalog is never ignored.
+
+Atomic filesystem metadata operations, durable writes, metadata garbage collection
+and rare rollback/recovery paths remain synchronous. A byte quantum is not a strict
+wall-clock guarantee on slow or failed media. Board stress validation is required.

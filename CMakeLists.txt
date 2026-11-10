@@ -100,6 +100,11 @@ if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS)
 endif()
 
 if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(async_install_tests tests/async_install.cpp)
+    target_link_libraries(async_install_tests PRIVATE flint_platform)
+    add_test(NAME async_install COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_async_install.py $<TARGET_FILE:async_install_tests>)
+    set_tests_properties(async_install PROPERTIES TIMEOUT 40)
     add_executable(lua_tests tests/lua.cpp)
     target_link_libraries(lua_tests PRIVATE flint_platform)
     add_test(NAME lua_sandbox COMMAND lua_tests)

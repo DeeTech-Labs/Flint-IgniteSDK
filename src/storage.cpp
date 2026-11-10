@@ -3,14 +3,19 @@
 #include <dirent.h>
 #else
 #include <direct.h>
+#include <fcntl.h>
 #include <filesystem>
+#include <io.h>
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 #include <algorithm>
 #include <cerrno>
 #include <flint/os.h>
 #include <map>
+#include <new>
 #include <set>
 #include <sys/stat.h>
 namespace flint {
@@ -22,15 +27,74 @@ static int replaceFile(const char *source, const char *target) {
 #endif
 }
 
+static std::array<int64_t, 5> fileVersion(const struct stat &status) {
+    std::array<int64_t, 5> result{
+        int64_t(status.st_size), int64_t(status.st_mtime), int64_t(status.st_ctime), 0, 0};
+#if defined(__linux__)
+    result[3] = status.st_mtim.tv_nsec;
+    result[4] = status.st_ctim.tv_nsec;
+#elif defined(__APPLE__)
+    result[3] = status.st_mtimespec.tv_nsec;
+    result[4] = status.st_ctimespec.tv_nsec;
+#endif
+    return result;
+}
 bool File::open(const std::string &path) {
     close();
-    struct stat st{};
-    if (stat(path.c_str(), &st) || !S_ISREG(st.st_mode) || st.st_size < 0 ||
-        uint64_t(st.st_size) > MaxPackageBytes)
+#ifdef _WIN32
+    // Keep a verified object open across an atomic rename. Disallow writers while
+    // holding this read handle; ordinary fopen does not permit FILE_SHARE_DELETE.
+    const auto native = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (native == INVALID_HANDLE_VALUE)
         return false;
-    size = st.st_size;
+    const auto descriptor =
+        _open_osfhandle(reinterpret_cast<intptr_t>(native), _O_RDONLY | _O_BINARY);
+    if (descriptor < 0) {
+        CloseHandle(native);
+        return false;
+    }
+    handle = _fdopen(descriptor, "rb");
+    if (!handle) {
+        _close(descriptor);
+        return false;
+    }
+#else
     handle = fopen(path.c_str(), "rb");
-    return handle;
+    if (!handle)
+        return false;
+#endif
+    struct stat st{};
+    if (fstat(fileno(handle), &st) || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+        uint64_t(st.st_size) > MaxPackageBytes) {
+        close();
+        return false;
+    }
+    size = st.st_size;
+    version_ = fileVersion(st);
+    return true;
+}
+bool File::unchanged() const {
+    struct stat status{};
+    return handle && !fstat(fileno(handle), &status) && fileVersion(status) == version_;
+}
+bool File::sameObject(const File &other) const {
+    if (!handle || !other.handle)
+        return false;
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION first{}, second{};
+    return GetFileInformationByHandle(
+               reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(handle))), &first) &&
+        GetFileInformationByHandle(
+            reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(other.handle))), &second) &&
+        first.dwVolumeSerialNumber == second.dwVolumeSerialNumber &&
+        first.nFileIndexHigh == second.nFileIndexHigh &&
+        first.nFileIndexLow == second.nFileIndexLow;
+#else
+    struct stat first{}, second{};
+    return !fstat(fileno(handle), &first) && !fstat(fileno(other.handle), &second) &&
+        first.st_dev == second.st_dev && first.st_ino == second.st_ino;
+#endif
 }
 void File::close() {
     if (handle)
@@ -41,7 +105,7 @@ void File::close() {
 Source File::source() {
     return {this, size, [](void *context, uint32_t offset, std::span<uint8_t> out) {
                 auto &f = *static_cast<File *>(context);
-                return offset <= f.size && out.size() <= f.size - offset &&
+                return f.handle && offset <= f.size && out.size() <= f.size - offset &&
                     fseek(f.handle, offset, SEEK_SET) == 0 &&
                     fread(out.data(), 1, out.size(), f.handle) == out.size();
             }};
@@ -270,50 +334,338 @@ Error PackageManager::locate(std::string_view id, Installed &result) const {
     result = {std::move(manifest), path, false};
     return Error::ok;
 }
-Error PackageManager::commit(const std::string &staging, std::string &id) {
-    if (staging != this->staging())
+namespace {
+class DirectoryCursor {
+    bool missing_{};
+#ifdef _WIN32
+    std::filesystem::directory_iterator current_, end_;
+#else
+    DIR *directory_{};
+#endif
+public:
+    DirectoryCursor() = default;
+    DirectoryCursor(const DirectoryCursor &) = delete;
+    DirectoryCursor &operator=(const DirectoryCursor &) = delete;
+    bool missing() const {
+        return missing_;
+    }
+    ~DirectoryCursor() {
+        close();
+    }
+    void close() {
+#ifdef _WIN32
+        current_ = {};
+#else
+        if (directory_)
+            closedir(directory_);
+        directory_ = nullptr;
+#endif
+    }
+    Error open(const std::string &path) {
+        close();
+        missing_ = false;
+#ifdef _WIN32
+        std::error_code error;
+        current_ = std::filesystem::directory_iterator(path, error);
+        missing_ = error == std::errc::no_such_file_or_directory;
+        return error ? Error::io_error : Error::ok;
+#else
+        directory_ = opendir(path.c_str());
+        missing_ = !directory_ && errno == ENOENT;
+        return directory_ ? Error::ok : Error::io_error;
+#endif
+    }
+    Error next(std::string &name, bool &present) {
+        present = false;
+#ifdef _WIN32
+        if (current_ == end_)
+            return Error::ok;
+        name = current_->path().filename().string();
+        std::error_code error;
+        current_.increment(error);
+        if (error)
+            return Error::io_error;
+#else
+        if (!directory_)
+            return Error::invalid_state;
+        errno = 0;
+        const auto *entry = readdir(directory_);
+        if (!entry)
+            return errno ? Error::io_error : Error::ok;
+        name = entry->d_name;
+#endif
+        present = true;
+        return Error::ok;
+    }
+};
+static std::string hexDigest(const std::array<uint8_t, 32> &digest) {
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(64);
+    for (const auto byte : digest) {
+        result += hex[byte >> 4];
+        result += hex[byte & 15];
+    }
+    return result;
+}
+} // namespace
+struct PreparedInstall::Impl {
+    enum class Phase {
+        candidate_package,
+        candidate_application,
+        factory_next,
+        factory_package,
+        factory_application,
+        current_open,
+        current_package,
+        current_application,
+        ready
+    };
+    PackageManager *owner{};
+    uint64_t revision{};
+    MemoryBudget available{};
+    uint64_t capabilities{};
+    std::string root, factory, expectedHash, previousRef;
+    File candidateFile, auxiliaryFile;
+    Package candidatePackage, auxiliaryPackage;
+    Manifest candidateManifest, auxiliaryManifest;
+    PackageValidation candidateValidation, auxiliaryValidation;
+    ApplicationValidation candidateApplication, auxiliaryApplication;
+    DirectoryCursor directory;
+    uint32_t total{};
+    Phase phase{Phase::candidate_package};
+    Error error{Error::ok};
+    bool committed{};
+    bool consumed{};
+    bool requireFactory{};
+    void clearAuxiliary() {
+        auxiliaryPackage.close();
+        auxiliaryFile.close();
+        auxiliaryManifest = {};
+    }
+};
+PreparedInstall::PreparedInstall(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+PreparedInstall::~PreparedInstall() = default;
+bool PreparedInstall::ready() const {
+    return !impl_->consumed && impl_->error == Error::ok && impl_->phase == Impl::Phase::ready;
+}
+bool PreparedInstall::committed() const {
+    return impl_->committed && !impl_->consumed;
+}
+uint32_t PreparedInstall::size() const {
+    return impl_->total;
+}
+uint32_t PreparedInstall::verifiedBytes() const {
+    return impl_->candidateValidation.verifiedBytes();
+}
+const Manifest &PreparedInstall::manifest() const {
+    return impl_->candidateManifest;
+}
+File &PreparedInstall::file() {
+    return impl_->candidateFile;
+}
+Package &PreparedInstall::package() {
+    return impl_->candidatePackage;
+}
+Manifest PreparedInstall::releaseManifest() {
+    impl_->consumed = true;
+    return std::move(impl_->candidateManifest);
+}
+Error PreparedInstall::advance(uint32_t budget) {
+    auto &state = *impl_;
+    using Phase = Impl::Phase;
+    if (state.committed)
+        return Error::invalid_state;
+    if (state.error != Error::ok || state.phase == Phase::ready)
+        return state.error;
+    if (budget < EntrySize)
         return Error::invalid_argument;
-    Manifest m;
-    auto error = inspect(staging, m);
+    if (state.owner->revision() != state.revision)
+        return state.error = Error::stale_handle;
+    Error error = Error::ok;
+    switch (state.phase) {
+    case Phase::candidate_package:
+        error = state.candidateValidation.advance(budget);
+        if (error == Error::ok && state.candidateValidation.done()) {
+            if (!state.expectedHash.empty() &&
+                hexDigest(state.candidateValidation.transferDigest()) != state.expectedHash)
+                return state.error = Error::integrity_failed;
+            error = state.candidateApplication.begin(state.candidatePackage,
+                state.candidateManifest, state.available, state.capabilities);
+            state.phase = Phase::candidate_application;
+        }
+        break;
+    case Phase::candidate_application:
+        error = state.candidateApplication.advance(budget);
+        if (error == Error::ok && state.candidateApplication.done()) {
+            error = state.directory.open(state.factory);
+            if (error != Error::ok && state.directory.missing() && !state.requireFactory) {
+                error = Error::ok;
+                state.phase = Phase::current_open;
+            } else
+                state.phase = Phase::factory_next;
+        }
+        break;
+    case Phase::factory_next: {
+        std::string name;
+        bool present = false;
+        error = state.directory.next(name, present);
+        if (error != Error::ok)
+            break;
+        if (!present) {
+            state.directory.close();
+            state.phase = Phase::current_open;
+        } else if (name.size() > 6 && name.ends_with(".ignit")) {
+            state.clearAuxiliary();
+            if (!state.auxiliaryFile.open(state.factory + "/" + name))
+                return state.error = Error::io_error;
+            error = state.auxiliaryValidation.begin(
+                state.auxiliaryPackage, state.auxiliaryFile.source());
+            state.phase = Phase::factory_package;
+        }
+        break;
+    }
+    case Phase::factory_package:
+    case Phase::current_package: {
+        const bool factory = state.phase == Phase::factory_package;
+        error = state.auxiliaryValidation.advance(budget);
+        if (error == Error::ok && state.auxiliaryValidation.done()) {
+            error = state.auxiliaryApplication.begin(state.auxiliaryPackage,
+                state.auxiliaryManifest, state.available, state.capabilities);
+            state.phase = factory ? Phase::factory_application : Phase::current_application;
+        }
+        // A broken user reference may be repaired; a broken read-only factory
+        // catalog must not make protected identities available for replacement.
+        if (error != Error::ok && !factory) {
+            state.clearAuxiliary();
+            state.phase = Phase::ready;
+            error = Error::ok;
+        }
+        break;
+    }
+    case Phase::factory_application:
+    case Phase::current_application: {
+        const bool factory = state.phase == Phase::factory_application;
+        error = state.auxiliaryApplication.advance(budget);
+        if (error != Error::ok && !factory) {
+            state.clearAuxiliary();
+            state.phase = Phase::ready;
+            error = Error::ok;
+        } else if (error == Error::ok && state.auxiliaryApplication.done()) {
+            const auto &candidate = state.candidateManifest;
+            const auto &current = state.auxiliaryManifest;
+            if (factory) {
+                if (current.id == candidate.id)
+                    return state.error = Error::permission_denied;
+                state.phase = Phase::factory_next;
+            } else {
+                if (current.id == candidate.id) {
+                    if (current.publisher != candidate.publisher)
+                        return state.error = Error::permission_denied;
+                    if (candidate.version <= current.version)
+                        return state.error = Error::incompatible_contract;
+                }
+                state.phase = Phase::ready;
+            }
+            state.clearAuxiliary();
+        }
+        break;
+    }
+    case Phase::current_open: {
+        state.previousRef = readText(state.root + "/" + state.candidateManifest.id + ".ref");
+        if (!objectName(state.previousRef) ||
+            !state.auxiliaryFile.open(state.root + "/" + state.previousRef)) {
+            state.phase = Phase::ready;
+        } else {
+            error = state.auxiliaryValidation.begin(
+                state.auxiliaryPackage, state.auxiliaryFile.source());
+            state.phase = Phase::current_package;
+            if (error != Error::ok) {
+                state.clearAuxiliary();
+                state.phase = Phase::ready;
+                error = Error::ok;
+            }
+        }
+        break;
+    }
+    case Phase::ready:
+        break;
+    }
+    return state.error = error;
+}
+Error PackageManager::prepareCommit(std::unique_ptr<PreparedInstall> &prepared,
+    std::string_view transferHash, uint32_t expectedSize) {
+    if ((!transferHash.empty() &&
+            (transferHash.size() != 64 ||
+                !std::all_of(transferHash.begin(), transferHash.end(),
+                    [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))) ||
+        expectedSize > MaxPackageBytes)
+        return Error::invalid_argument;
+    auto state = std::unique_ptr<PreparedInstall::Impl>(new (std::nothrow) PreparedInstall::Impl);
+    if (!state)
+        return Error::resource_exhausted;
+    state->owner = this;
+    state->revision = revision_;
+    state->root = root_;
+    state->factory = factory_;
+    state->available = available_;
+    state->capabilities = capabilities_;
+    state->requireFactory = requireFactory_;
+    state->expectedHash = transferHash;
+    if (!state->candidateFile.open(staging()))
+        return Error::io_error;
+    state->total = state->candidateFile.size;
+    if (expectedSize && expectedSize != state->total)
+        return Error::invalid_state;
+    auto error = state->candidateValidation.begin(
+        state->candidatePackage, state->candidateFile.source(), !transferHash.empty());
     if (error != Error::ok)
         return error;
-    Installed current;
-    if (locate(m.id, current) == Error::ok) {
-        // A claimed publisher string is not proof of identity. User packages cannot replace factory
-        // identities.
-        if (current.factory || current.manifest.publisher != m.publisher)
-            return Error::permission_denied;
-        if (m.version <= current.manifest.version)
-            return Error::incompatible_contract;
-    }
-    File f;
-    if (!f.open(staging))
-        return Error::io_error;
-    std::array<uint8_t, 64> h{};
-    if (!f.source().read(&f, 0, h))
-        return Error::io_error;
-    f.close();
-    const char *hex = "0123456789abcdef";
-    std::string object;
-    for (size_t i = 32; i < 64; ++i) {
-        object += hex[h[i] >> 4];
-        object += hex[h[i] & 15];
-    }
-    object += ".ignit";
-    const auto ref = root_ + "/" + m.id + ".ref";
-    auto previous = readText(ref);
-    if (!previous.empty() &&
+    auto result =
+        std::unique_ptr<PreparedInstall>(new (std::nothrow) PreparedInstall(std::move(state)));
+    if (!result)
+        return Error::resource_exhausted;
+    prepared = std::move(result);
+    return Error::ok;
+}
+Error PackageManager::commit(PreparedInstall &prepared, std::string &id) {
+    auto &state = *prepared.impl_;
+    if (state.owner != this || !prepared.ready() || state.committed)
+        return Error::invalid_state;
+    if (state.revision != revision_)
+        return Error::stale_handle;
+    File currentStaging;
+    if (!state.candidateFile.unchanged() || !currentStaging.open(staging()) ||
+        !state.candidateFile.sameObject(currentStaging))
+        return Error::stale_handle;
+    const auto &manifest = state.candidateManifest;
+    const auto ref = root_ + "/" + manifest.id + ".ref";
+    if (readText(ref) != state.previousRef)
+        return Error::stale_handle;
+    const auto object = hexDigest(state.candidatePackage.digest()) + ".ignit";
+    if (!state.previousRef.empty() &&
         !writeAtomic(ref + ".previous",
-            {reinterpret_cast<const uint8_t *>(previous.data()), previous.size()}))
+            {reinterpret_cast<const uint8_t *>(state.previousRef.data()),
+                state.previousRef.size()}))
         return Error::io_error;
-    if (replaceFile(staging.c_str(), (root_ + "/" + object).c_str()))
+    if (replaceFile(staging().c_str(), (root_ + "/" + object).c_str()))
         return Error::io_error;
     if (!writeAtomic(ref, {reinterpret_cast<const uint8_t *>(object.data()), object.size()}))
         return Error::io_error;
     ++revision_;
+    state.committed = true;
     collectObjects(root_);
-    id = m.id;
+    id = manifest.id;
     return Error::ok;
+}
+Error PackageManager::commit(const std::string &staging, std::string &id) {
+    if (staging != this->staging())
+        return Error::invalid_argument;
+    std::unique_ptr<PreparedInstall> prepared;
+    auto error = prepareCommit(prepared);
+    while (error == Error::ok && !prepared->ready())
+        error = prepared->advance(4096);
+    return error == Error::ok ? commit(*prepared, id) : error;
 }
 Error PackageManager::remove(std::string_view id) {
     if (!identifier(id))

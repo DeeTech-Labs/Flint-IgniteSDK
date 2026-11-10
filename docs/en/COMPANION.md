@@ -38,3 +38,22 @@ samples cannot carry a demand generation. New providers exclusively use methods
 Core owns all state. Adapters call `takeCompanionEvent` only with TX capacity and
 send complete frames. SDK has no FreeRTOS/USB/BLE dependency. Local applications
 continue running without a provider.
+
+
+## Logical session close
+
+Capability `512` advertises `session_close` (26), an empty request with a normal
+Error reply. It requires an authenticated compatible Session. ACK confirms removal
+of that session's subscriptions, binding, external data and unfinished install
+verification. It never rolls back an already published package.
+
+On explicit disconnect Flare sends USB close and waits up to 100 ms for ACK without
+blocking the GUI, then closes the port. Errors/timeouts leave the installation
+outcome uncertain to the client; inspect the catalog after reconnect. BLE uses
+hardware disconnect events. A new USB/BLE hello starts a new logical session even
+without changing the physical connection.
+
+Provider bindings have a 10-second lease from the last accepted sample, or from
+initial bind before the first sample. Expiration releases the binding, changes the
+generation and notifies remaining subscribers. Old-generation samples are rejected;
+an inactive provider cannot retain the source indefinitely.

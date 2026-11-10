@@ -47,7 +47,16 @@ class Companion:
         self.serial.open()
         self.sequence, self.buffer = 0, bytearray()
         self.events = {}
-    def close(self): self.serial.close()
+        self.capabilities = 0
+    def close(self):
+        try:
+            if self.capabilities & 512:
+                self.request("session_close", timeout=.25)
+        except Exception:
+            # Disconnect cannot undo a commit already published; reconnect must inspect it.
+            pass
+        finally:
+            self.serial.close()
     def request(self, method, data=b"", timeout=5):
         if len(data) > 4096: raise ValueError("payload too large")
         self.sequence = (self.sequence + 1) & 0xffffffff or 1
@@ -96,6 +105,7 @@ class Companion:
         r = Reader(self.request("hello",struct.pack("<HI",1,REVISION)+text("ignite-sdk-device-test")+struct.pack("<Q",required)))
         result = {"protocol":r.number(2),"revision":r.number(),"build":r.text(),"profile":r.text(),"capabilities":r.number(8)}
         if result["capabilities"] & required != required: raise ValueError("device lacks required capabilities")
+        self.capabilities = result["capabilities"]
         return result
     def diagnostics(self):
         r = Reader(self.request("diagnostics"))
@@ -122,6 +132,6 @@ class Companion:
             next_offset = reply.number()
             if next_offset != offset + len(chunk): raise ValueError("unexpected transfer offset")
             offset = next_offset
-        return Reader(self.request("install_commit")).text()
+        return Reader(self.request("install_commit", timeout=45)).text()
     def launch(self, ident, component="main"):
         self.request("launch",text(ident)+text(component))

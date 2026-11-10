@@ -12,6 +12,7 @@ inline constexpr uint16_t ApiVersion = 1, PackageVersion = 1, FaceApiVersion = 1
 inline constexpr uint32_t ContractRevision = 0x20261105;
 inline constexpr uint16_t CompanionDemandVersion = 1;
 inline constexpr uint64_t CapCompanionDemand = 256;
+inline constexpr uint64_t CapSessionClose = 512;
 inline constexpr uint32_t CompanionSampleIntervalMs = 2000, CompanionTtlMs = 10000;
 enum class CompanionDemand : uint8_t { no_consumer, permission_denied, active };
 inline constexpr std::string_view DeviceProfile = "flint_spark_s3_supermini";

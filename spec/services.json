@@ -151,6 +151,12 @@
             "mutates": false,
             "trust": "authenticated_companion",
             "direction": "event"
+        },
+        {
+            "id": 26,
+            "name": "session_close",
+            "mutates": true,
+            "trust": "authenticated_companion"
         }
     ]
 }

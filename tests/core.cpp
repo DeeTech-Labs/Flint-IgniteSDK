@@ -89,6 +89,7 @@ int main(int argc, char **argv) {
     CHECK(request(Method::info) == Error::permission_denied);
     CHECK(request(Method::diagnostics) == Error::permission_denied);
     CHECK(request(Method::companion_subscribe) == Error::permission_denied);
+    CHECK(request(Method::session_close) == Error::permission_denied);
     session.authenticated = true;
     Bytes info;
     CHECK(request(Method::info, {}, &info) == Error::ok);
@@ -214,7 +215,29 @@ int main(int argc, char **argv) {
     core.tick();
     CHECK(core.scene(scene) == Error::ok);
     CHECK(text(scene).find("CPU") == std::string::npos);
+    // A silent provider loses its lease even if it never submitted a sample.
+    Session replacement{true, true, 223};
+    auto subscribed =
+        core.handle({Method::companion_subscribe, 1, false, subscribe.data}, replacement);
+    CHECK(u16(subscribed.payload.data()) == 0);
+    CHECK(core.takeCompanionEvent(replacement, event));
+    Reader state{event.payload};
+    state.n(2);
+    state.n(1);
+    Writer takeover;
+    takeover.n(CompanionDemandVersion, 2);
+    takeover.n(1, 1);
+    takeover.n(state.n(8), 8);
+    auto boundReply = core.handle({Method::companion_bind, 2, false, takeover.data}, replacement);
+    CHECK(u16(boundReply.payload.data()) == 0);
+    CHECK(request(Method::metrics, metrics.data) == Error::invalid_state);
+    tick += CompanionTtlMs;
+    core.tick();
     CHECK(request(Method::metrics, metrics.data) == Error::ok);
+    const auto closed = core.handle({Method::session_close, 3, false, {}}, replacement);
+    CHECK(u16(closed.payload.data()) == 0 && !replacement.compatible);
+    CHECK(core.scene(scene) == Error::ok);
+    CHECK(text(scene).find("CPU 12.3%") != std::string::npos);
     core.disconnect(session);
     CHECK(core.runtime().state() == State::active);
     CHECK(core.scene(scene) == Error::ok);
