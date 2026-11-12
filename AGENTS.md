@@ -1,5 +1,12 @@
 # Flint IgniteSDK — AI Agent Instructions
 
+## Build and Temporary Directories
+
+- Run every build only inside the owning project's `build/` directory; keep separate configurations in subdirectories such as `build/debug/` and `build/no-lua/`.
+- Store all temporary files, scratch scripts, logs, and other temporary artifacts only inside the owning project's `temp/` directory.
+- Ensure both `/build/` and `/temp/` are listed in that project's `.gitignore` before creating artifacts.
+- Do not use the repository root, sibling projects, external directories, or system temporary directories for these artifacts. Each checkout, including an SDK submodule built independently, must use its own directories.
+
 ## 1. Role and Mission
 
 Act as a Senior C++20 Software Engineer, Embedded Runtime Architect, SDK Maintainer, Security Engineer, and Code Reviewer.
@@ -794,33 +801,35 @@ python3 tools/build_system.py
 git diff --exit-code -- include/flint/registry.h include/flint/services.h factory examples
 ```
 
-`build_system.py` writes factory packages and example `sample.ignit` files; inspect existing changes before running generators. The diff check detects stale checked-in artifacts and must be interpreted against the pre-existing working tree. Do not discard local changes to make it pass.
+Generators default to build/generated/. Use --output and --examples-output for isolated directories, or --skip-examples for firmware. CMake invokes FlintGenerate.cmake automatically; tests and installs consume build-local outputs. The diff check verifies that source snapshots stay untouched; preserve pre-existing changes. Manual icon/font generators also default to build/generated/.
 
 ### Host Build
 
 ```sh
-cmake -S . -B /tmp/flint-ignitesdk -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/flint-ignitesdk --parallel 2
+cmake -S . -B build/debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/debug --parallel 2
 ```
 
 ### Tests
 
 ```sh
-ctest --test-dir /tmp/flint-ignitesdk --output-on-failure
+ctest --test-dir build/debug --output-on-failure
 ```
 
 ### Example Package
 
+Create the project-local `temp/` directory before running this command.
+
 ```sh
 python3 tools/compile_ignite.py \
     examples/pc-monitor/project.json \
-    /tmp/pc-monitor.ignit
+    temp/pc-monitor.ignit
 ```
 
 ### SDK Installation
 
 ```sh
-cmake --install /tmp/flint-ignitesdk --prefix /tmp/flint-sdk
+cmake --install build/debug --prefix temp/flint-sdk
 ```
 
 ### Lua-Disabled Configuration
@@ -828,15 +837,15 @@ cmake --install /tmp/flint-ignitesdk --prefix /tmp/flint-sdk
 Test when changes affect Lua or package compatibility:
 
 ```sh
-cmake -S . -B /tmp/flint-no-lua \
+cmake -S . -B build/no-lua \
     -DFLINT_ENABLE_LUA=OFF
-cmake --build /tmp/flint-no-lua --parallel
-ctest --test-dir /tmp/flint-no-lua --output-on-failure
+cmake --build build/no-lua --parallel
+ctest --test-dir build/no-lua --output-on-failure
 ```
 
 Build configurations and different SDK checkouts must use isolated directories. Do not reuse the build tree of an OS/Flare submodule for this standalone checkout. Use a fresh path if any shown directory belongs to another checkout. Multi-configuration generators require `--config Debug` for build/install and `-C Debug` for CTest.
 
-Host prerequisites are CMake 3.21+, C/C++ compilers with C++20 support, and Python 3 for tests/tools; Pillow is needed for font/image compilation. Lua is bundled and needs no system Lua installation. With `FLINT_PLATFORM_TESTS=OFF`, CMake does not require Python for tests.
+Host prerequisites are CMake 3.21+, C/C++ compilers with C++20 support, and Python 3 for tests/tools; Pillow is needed for font/image compilation. Lua is bundled and needs no system Lua installation. Python and Pillow are required for source-derived registry/package generation even with FLINT_PLATFORM_TESTS=OFF.
 
 Do not change generated or checked-in assets without evaluating reproducibility.
 
