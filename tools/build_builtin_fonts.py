@@ -2,10 +2,14 @@
 """Bake antialiased Lato subsets into VLW arrays (Pillow required).
 
 Usage: python3 platform/tools/build_builtin_fonts.py --font-dir /path/to/lato
-Generated files are committed; firmware builds do not need Pillow or TTF files.
+Output defaults to build/generated/fonts; source updates are a separate review step.
+Firmware builds do not regenerate fonts or require TTF files.
 """
 
 import argparse
+import sys
+sys.dont_write_bytecode = True
+from generation import write_if_changed
 import hashlib
 import struct
 from pathlib import Path
@@ -14,7 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def bake(path, size, chars, name, directory=None):
+def bake(path, size, chars, name, directory=None, *, include_offsets=True):
     font = ImageFont.truetype(str(path), size)
     glyphs = []
     for char in sorted(set(chars)):
@@ -52,7 +56,7 @@ def bake(path, size, chars, name, directory=None):
         for i in range(0, len(blob), 20)
     ]
     lines += ["};", ""]
-    if directory is None or directory == ROOT / "include/flint/graphics/fonts":
+    if include_offsets:
         offset = 24 + len(glyphs) * 28
         offsets = []
         for glyph in glyphs:
@@ -64,31 +68,33 @@ def bake(path, size, chars, name, directory=None):
             "};",
             "",
         ]
-    output = (directory or ROOT / "include/flint/graphics/fonts") / (name + ".inc")
-    output.write_text("\n".join(lines))
+    output = (directory or ROOT / "build/generated/fonts") / (name + ".inc")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_if_changed(output, "\n".join(lines).encode("utf-8"))
     print(f"{output.name}: {len(blob)} bytes, {len(glyphs)} glyphs, {size}px")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--font-dir", required=True, type=Path)
+    parser.add_argument("--output", type=Path, default=ROOT / "build/generated/fonts")
     args = parser.parse_args()
     bake(
         args.font_dir / "Lato-Bold.ttf",
         34,
         "FlinT?",
         "flint_brand",
-        ROOT / "include/flint/graphics/fonts",
+        args.output,
     )
     numbers = "-0123456789:"
-    bake(args.font_dir / "Lato-Light.ttf", 80, numbers, "flint_time_large")
-    bake(args.font_dir / "Lato-Light.ttf", 62, numbers, "flint_time_compact")
+    bake(args.font_dir / "Lato-Light.ttf", 80, numbers, "flint_time_large", args.output)
+    bake(args.font_dir / "Lato-Light.ttf", 62, numbers, "flint_time_compact", args.output)
     body = (
         "".join(chr(c) for c in range(32, 127))
         + "".join(chr(c) for c in range(0x410, 0x450))
         + "Ёё°—–…·→←"
     )
-    bake(args.font_dir / "Lato-Regular.ttf", 20, body, "flint_body")
+    bake(args.font_dir / "Lato-Regular.ttf", 20, body, "flint_body", args.output)
 
 
 if __name__ == "__main__":

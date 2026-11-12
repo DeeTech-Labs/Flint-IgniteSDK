@@ -2,6 +2,7 @@
 #include "diagnostics.h"
 #include "graphics/renderer.h"
 #include "manifest.h"
+#include "flim.h"
 namespace flint {
 struct ResourceHandle {
     uint32_t section{};
@@ -10,7 +11,10 @@ struct ResourceHandle {
 class ResourceManager {
     Package *package_{};
     uint64_t generation_{};
+    // Glyph alpha is consumed synchronously before the next image/glyph operation.
+    // Reuse it for the image palette and row: no extra image pixel buffers.
     std::array<uint8_t, 4096> glyph_{};
+    FlimDecoder decoder_{std::span(glyph_).first<FlimDecoder::ScratchBytes>()};
     mutable std::array<Package::View, 32> views_{};
     mutable size_t nextView_{};
     struct GlyphInfo {
@@ -26,6 +30,10 @@ class ResourceManager {
     Error view(uint32_t id, Package::View &result) const;
 
 public:
+    ResourceManager() = default;
+    ResourceManager(const ResourceManager &) = delete;
+    ResourceManager &operator=(const ResourceManager &) = delete;
+    FlimDecoder &decoder() { return decoder_; }
     void profilingClock(std::function<uint64_t()> clock) {
         clock_ = std::move(clock);
     }

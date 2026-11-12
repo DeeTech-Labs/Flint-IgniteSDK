@@ -1,3 +1,4 @@
+#include <flint/icons.h>
 #include <flint/resources.h>
 namespace flint {
 Error ResourceManager::view(uint32_t id, Package::View &result) const {
@@ -131,31 +132,33 @@ void ResourceManager::textBounds(FlintRender::Op &op, const uint8_t *text, size_
     op.inkH = int16_t(bottom - top);
 }
 void ResourceManager::image(FlintRender::Canvas &canvas, const FlintRender::Op &op) {
-    Entry e;
-    if (find(op.extra, e) != Error::ok || e.type != Section::resource || e.size < 8)
+    // A renderer bound only to the foreground package (e.g. remote Preview)
+    // cannot resolve catalog indices as resource IDs in that package.
+    if (op.kind == FlintRender::CatalogIcon) {
+        drawDefaultIcon(canvas, op);
         return;
-    auto h = handle(op.extra);
-    std::array<uint8_t, 640> row{};
-    if (read(h, 0, std::span(row).first(8)) != Error::ok || u32(row.data()) != 0x4d494c46)
-        return;
-    unsigned w = u16(row.data() + 4), height = u16(row.data() + 6);
-    if (w > 320 || height > 320 || w != unsigned(op.w) || height != unsigned(op.h) ||
-        e.size != 8 + w * height * 2)
-        return;
-    const int left = std::max({0, canvas.clip.x, int(op.x)});
-    const int right = std::min({canvas.width, canvas.clip.x + canvas.clip.w, op.x + int(w)});
-    const int top = std::max({0, canvas.clip.y, int(op.y)});
-    const int bottom = std::min({canvas.height, canvas.clip.y + canvas.clip.h, op.y + int(height)});
-    if (left >= right || top >= bottom)
-        return;
-    const auto bytes = std::span(row).first((right - left) * 2);
-    for (int y = top; y < bottom; ++y) {
-        const auto offset = 8 + ((y - op.y) * w + (left - op.x)) * 2;
-        if (read(h, offset, bytes) != Error::ok)
-            return;
-        for (int x = left; x < right; ++x)
-            canvas.pixel(x, y, u16(row.data() + (x - left) * 2));
     }
+    Package::View section;
+    if (view(op.extra, section) != Error::ok || section.info().type != Section::resource)
+        return;
+    struct ReadContext {
+        ResourceManager &owner;
+        Package::View &section;
+    } context{*this, section};
+    const Source source{&context, section.info().size,
+        [](void *pointer, uint32_t offset, std::span<uint8_t> bytes) {
+            auto &read = *static_cast<ReadContext *>(pointer);
+            TimingScope timing(read.owner.clock_, read.owner.readTiming_);
+            const auto error = read.section.read(offset, bytes);
+            if (error == Error::ok)
+                read.owner.readBytes_ += bytes.size();
+            else
+                ++read.owner.readErrors_;
+            return error == Error::ok;
+        }};
+    if (decoder_.open(source) == Error::ok)
+        decoder_.draw(canvas, op);
+    decoder_.close();
 }
 
 } // namespace flint

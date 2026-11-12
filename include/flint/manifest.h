@@ -13,9 +13,18 @@ struct ComponentInfo {
     Role role{};
     uint32_t section{};
 };
+struct IconResources {
+    uint32_t main{}, mask{}, light{}, dark{};
+};
+inline uint32_t selectIcon(const IconResources &icons, bool themed, bool dark) {
+    return themed ? (icons.mask ? icons.mask : icons.main)
+                  : (dark ? (icons.dark ? icons.dark : icons.main)
+                          : (icons.light ? icons.light : icons.main));
+}
 struct Manifest {
     std::string id, name, publisher;
     uint32_t version{};
+    IconResources icons;
     MemoryBudget budget{};
     uint64_t capabilities{};
     std::vector<Declaration> permissions;

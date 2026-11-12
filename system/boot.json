@@ -1,0 +1,110 @@
+{
+    "id": "system.boot",
+    "name": "FlinT Startup",
+    "publisher": "deetech",
+    "version": 2,
+    "permissions": [
+        "ui.render",
+        "system.locale.read",
+        "system.info",
+        "input.focused",
+        "ui.navigation",
+        "time.timer.create",
+        "system.settings.read"
+    ],
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "w": 280,
+                    "h": 240,
+                    "color": "theme.background"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "halo",
+                    "x": 90,
+                    "y": 24,
+                    "w": 100,
+                    "h": 100,
+                    "color": "theme.surface",
+                    "extra": 50
+                },
+                {
+                    "kind": "rounded",
+                    "id": "inner",
+                    "x": 95,
+                    "y": 29,
+                    "w": 90,
+                    "h": 90,
+                    "color": "theme.background",
+                    "extra": 45
+                },
+                {
+                    "kind": "rounded",
+                    "id": "stem",
+                    "x": 126,
+                    "y": 52,
+                    "w": 6,
+                    "h": 45,
+                    "color": "theme.accent",
+                    "extra": 3
+                },
+                {
+                    "kind": "rounded",
+                    "id": "top",
+                    "x": 126,
+                    "y": 52,
+                    "w": 32,
+                    "h": 6,
+                    "color": "theme.accent",
+                    "extra": 3
+                },
+                {
+                    "kind": "rounded",
+                    "id": "middle",
+                    "x": 126,
+                    "y": 72,
+                    "w": 25,
+                    "h": 6,
+                    "color": "theme.accent",
+                    "extra": 3
+                },
+                {
+                    "kind": "text",
+                    "id": "brand",
+                    "x": 140,
+                    "y": 171,
+                    "text": "FlinT",
+                    "color": "theme.text",
+                    "font": 3,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "id": "hint",
+                    "x": 140,
+                    "y": 210,
+                    "text": "${locale:power_on}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                }
+            ]
+        }
+    ],
+    "app_api": 1,
+    "capabilities": 6209,
+    "budget": {
+        "internal": 49152,
+        "external": 0,
+        "instructions": 4096
+    },
+    "logic": {
+        "language": "lua",
+        "path": "scripts/boot.lua"
+    }
+}

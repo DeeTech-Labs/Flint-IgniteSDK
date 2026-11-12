@@ -22,6 +22,6 @@ jobs:
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure
       - run: |
-          python tools/generate_registry.py
-          python tools/build_system.py
+          python -B tools/generate_registry.py --output build/generated/include
+          python -B tools/build_system.py --output build/generated/factory --examples-output build/generated/examples
           git diff --exit-code -- include/flint/registry.h include/flint/services.h factory examples

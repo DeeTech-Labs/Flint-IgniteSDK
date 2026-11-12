@@ -9,6 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = Path(sys.argv.pop(1)).resolve()
+WITHOUT_LUA = "--without-lua" in sys.argv
+if WITHOUT_LUA:
+    sys.argv.remove("--without-lua")
 sys.path.insert(0, str(ROOT / "tools"))
 from build_package import build
 from compile_ignite import compile_project
@@ -112,7 +115,12 @@ class SDKTests(unittest.TestCase):
     def test_all_factory_projects(self):
         for source in (ROOT / "system").glob("*.json"):
             with self.subTest(source=source.name):
-                self.cli("build", source, self.output, "--validator", VALIDATOR)
+                requires_lua = "logic" in json.loads(source.read_text(encoding="utf-8"))
+                if WITHOUT_LUA and requires_lua:
+                    result = self.cli("build", source, self.output, "--validator", VALIDATOR, success=False)
+                    self.assertIn("not_supported", result.stderr)
+                else:
+                    self.cli("build", source, self.output, "--validator", VALIDATOR)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 #pragma once
 #include "diagnostics.h"
+#include "icons.h"
 #include "protocol.h"
 #include "runtime.h"
 #include <optional>
@@ -7,7 +8,8 @@ namespace flint {
 inline constexpr uint64_t CapDeclarative = 1, CapResources = 2, CapPackages = 4, CapMetrics = 8,
                           CapUsb = 16, CapBle = 32;
 #ifdef FLINT_ENABLE_LUA
-inline constexpr uint64_t HostLogicCapabilities = CapLua | CapAppApi;
+inline constexpr uint64_t HostLogicCapabilities =
+    CapLua | CapAppApi | CapTouchEvents | CapInteractiveUi;
 #else
 inline constexpr uint64_t HostLogicCapabilities = 0;
 #endif
@@ -31,6 +33,19 @@ struct Platform {
     std::function<void(bool)> ble_apply;
     bool rename_open_files{true};
     bool require_factory{};
+    // Device adapter sets this only for a physical power-on reset, never wake/restart.
+    bool power_on{};
+    // Device-owned package status presentation; the foreground application keeps running.
+    bool system_ui{};
+    // Optional owner-thread paint sink before a synchronous storage mutation.
+    // May paint the supplied scene; must not mutate/reenter lifecycle or package operations.
+    std::function<void(const FlintRender::Scene &)> present;
+    struct PairingPrompt {
+        int32_t code{-1};
+        std::array<uint8_t, 6> address{};
+        uint8_t address_type{};
+    };
+    std::function<PairingPrompt()> pairing_prompt;
 };
 struct Session {
     bool authenticated{}, compatible{};
@@ -45,6 +60,7 @@ class Core {
     Platform platform_;
     PackageManager packages_;
     Runtime runtime_;
+    IconCache icons_;
     Values settings_, theme_, locale_;
     EventBus events_;
     std::vector<PermissionRecord> grants_;
@@ -74,6 +90,52 @@ class Core {
     uint64_t privateWriteAt_{};
     bool privateWritten_{};
     uint64_t renderedMinute_{~uint64_t(0)};
+    uint64_t startupGeneration_{}, startupUntil_{UINT64_MAX};
+    std::string pendingUiAction_, pendingUiValue_;
+    uint64_t pendingUiGeneration_{}, notifiedCatalog_{UINT64_MAX};
+    void applyUiAction();
+    struct EdgeNavigation {
+        Runtime preview;
+        FlintRender::Scene source, target;
+        uint64_t generation{}, at{}, sampleAt{}, started{}, nextFrame{}, integratedAt{};
+        int64_t position{280000}, springVelocity{};
+        int pointer{-1}, startX{}, origin{280}, offset{280}, from{280}, targetX{280}, lastX{},
+            velocity{};
+        bool ready{}, settling{}, commit{}, dirty{};
+    };
+    std::unique_ptr<EdgeNavigation> edge_;
+    Error edgeInput(InputEvent event);
+    bool edgeTick();
+    Error edgeRender(FlintRender::Scene &scene);
+    enum class OperationPhase {
+        receiving,
+        verifying,
+        publishing,
+        removing,
+        complete,
+        failed,
+        interrupted
+    };
+    std::unique_ptr<Runtime> presentation_;
+    OperationPhase operationPhase_{OperationPhase::complete};
+    uint64_t operationOwner_{}, operationUntil_{UINT64_MAX}, operationPaintAt_{};
+    uint32_t operationDone_{}, operationTotal_{};
+    Error operationError_{Error::ok};
+    bool operationRemoving_{}, operationDirty_{};
+    bool notice_{};
+    int16_t presentationX_{}, presentationY_{};
+    int presentationPointer_{-1};
+    bool transferCancelled_{};
+    int32_t pairingShown_{-1};
+    std::string noticeKey_, noticeSubject_, noticeDetail_, noticeScope_;
+    bool presentation(std::string_view package, std::string_view component = "main");
+    void notice(
+        std::string_view key, std::string subject, std::string detail = {}, std::string scope = {});
+    static std::string uiText(std::string text, int width = 224);
+    void operationUpdate(
+        OperationPhase phase, uint32_t done, uint32_t total, Error error = Error::ok);
+    bool operationTick();
+    Error operationRender(FlintRender::Scene &scene);
     Error appCall(
         AppService service, std::string_view key, std::string_view value, AppReply &reply);
     Error activateRole(Role role, std::string_view selection = {});
@@ -125,9 +187,7 @@ public:
         return runtime_;
     }
     bool tick();
-    Error postInput(InputEvent event) {
-        return runtime_.postInput(event);
-    }
+    Error postInput(InputEvent event);
     uint64_t nextWake() const;
     Error lastLogicError() const {
         return lastLogicError_;

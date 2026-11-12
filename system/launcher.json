@@ -2,11 +2,16 @@
     "id": "system.launcher",
     "name": "Launcher",
     "publisher": "deetech",
-    "version": 1,
+    "version": 3,
     "permissions": [
         "ui.render",
         "packages.list",
-        "system.locale.read"
+        "system.locale.read",
+        "system.info",
+        "input.focused",
+        "ui.navigation",
+        "time.timer.create",
+        "system.settings.read"
     ],
     "components": [
         {
@@ -21,23 +26,260 @@
                     "color": "theme.background"
                 },
                 {
+                    "kind": "rounded",
+                    "id": "card0",
+                    "x": 12,
+                    "y": 60,
+                    "w": 124,
+                    "h": 94,
+                    "extra": 20,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "catalog_icon",
+                    "id": "icon0",
+                    "x": 50,
+                    "y": 76,
+                    "color": "theme.accent",
+                    "w": 48,
+                    "h": 48
+                },
+                {
                     "kind": "text",
-                    "x": 140,
-                    "y": 42,
+                    "id": "name0",
+                    "x": 74,
+                    "y": 137,
                     "center": true,
-                    "text": "${locale:launcher}",
+                    "text": "${app.row0}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "card1",
+                    "x": 144,
+                    "y": 60,
+                    "w": 124,
+                    "h": 94,
+                    "extra": 20,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "catalog_icon",
+                    "id": "icon1",
+                    "x": 182,
+                    "y": 76,
+                    "color": "theme.accent",
+                    "w": 48,
+                    "h": 48
+                },
+                {
+                    "kind": "text",
+                    "id": "name1",
+                    "x": 206,
+                    "y": 137,
+                    "center": true,
+                    "text": "${app.row1}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "card2",
+                    "x": 12,
+                    "y": 160,
+                    "w": 124,
+                    "h": 94,
+                    "extra": 20,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "catalog_icon",
+                    "id": "icon2",
+                    "x": 50,
+                    "y": 176,
+                    "color": "theme.accent",
+                    "w": 48,
+                    "h": 48
+                },
+                {
+                    "kind": "text",
+                    "id": "name2",
+                    "x": 74,
+                    "y": 237,
+                    "center": true,
+                    "text": "${app.row2}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "card3",
+                    "x": 144,
+                    "y": 160,
+                    "w": 124,
+                    "h": 94,
+                    "extra": 20,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "catalog_icon",
+                    "id": "icon3",
+                    "x": 182,
+                    "y": 176,
+                    "color": "theme.accent",
+                    "w": 48,
+                    "h": 48
+                },
+                {
+                    "kind": "text",
+                    "id": "name3",
+                    "x": 206,
+                    "y": 237,
+                    "center": true,
+                    "text": "${app.row3}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "card4",
+                    "x": 12,
+                    "y": 260,
+                    "w": 124,
+                    "h": 94,
+                    "extra": 20,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "catalog_icon",
+                    "id": "icon4",
+                    "x": 50,
+                    "y": 276,
+                    "color": "theme.accent",
+                    "w": 48,
+                    "h": 48
+                },
+                {
+                    "kind": "text",
+                    "id": "name4",
+                    "x": 74,
+                    "y": 337,
+                    "center": true,
+                    "text": "${app.row4}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "card5",
+                    "x": 144,
+                    "y": 260,
+                    "w": 124,
+                    "h": 94,
+                    "extra": 20,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "catalog_icon",
+                    "id": "icon5",
+                    "x": 182,
+                    "y": 276,
+                    "color": "theme.accent",
+                    "w": 48,
+                    "h": 48
+                },
+                {
+                    "kind": "text",
+                    "id": "name5",
+                    "x": 206,
+                    "y": 337,
+                    "center": true,
+                    "text": "${app.row5}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "rect",
+                    "id": "header",
+                    "x": 0,
+                    "y": 0,
+                    "w": 280,
+                    "h": 56,
+                    "color": "theme.surface"
+                },
+                {
+                    "kind": "text",
+                    "id": "back",
+                    "x": 25,
+                    "y": 37,
+                    "text": "<",
                     "color": "theme.accent"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 130,
-                    "center": true,
-                    "font": 0,
-                    "text": "${packages.list}",
+                    "id": "title",
+                    "x": 65,
+                    "y": 37,
+                    "text": "${locale:launcher}",
                     "color": "theme.text"
+                },
+                {
+                    "kind": "text",
+                    "id": "count",
+                    "x": 242,
+                    "y": 37,
+                    "center": true,
+                    "text": "${app.count}",
+                    "color": "theme.muted"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "track",
+                    "x": 274,
+                    "y": 64,
+                    "w": 2,
+                    "h": 164,
+                    "extra": 1,
+                    "color": "theme.muted"
+                },
+                {
+                    "kind": "rounded",
+                    "id": "thumb",
+                    "x": 274,
+                    "y": 64,
+                    "w": 2,
+                    "h": 56,
+                    "extra": 1,
+                    "color": "theme.accent"
+                },
+                {
+                    "kind": "text",
+                    "id": "empty",
+                    "x": 140,
+                    "y": 116,
+                    "center": true,
+                    "text": "${locale:empty_apps}",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "text",
+                    "id": "empty_hint",
+                    "x": 140,
+                    "y": 152,
+                    "center": true,
+                    "text": "${locale:install_flare}",
+                    "color": "theme.muted"
                 }
             ]
         }
-    ]
+    ],
+    "app_api": 1,
+    "capabilities": 6209,
+    "budget": {
+        "internal": 49152,
+        "external": 0,
+        "instructions": 4096
+    },
+    "logic": {
+        "language": "lua",
+        "path": "scripts/launcher.lua",
+        "includes": [
+            "scripts/touch.lua"
+        ]
+    }
 }

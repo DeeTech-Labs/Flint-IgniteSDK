@@ -5,6 +5,7 @@
 namespace flint {
 // Additive application API. Packages using it must require this capability.
 inline constexpr uint64_t CapAppApi = 128;
+inline constexpr uint64_t CapTouchEvents = 2048, CapInteractiveUi = 4096;
 inline constexpr size_t MaxAppString = 192;
 inline bool appKey(std::string_view key) {
     if (key.empty() || key.size() > 32)
@@ -52,11 +53,26 @@ inline bool appText(std::string_view text) {
     }
     return true;
 }
-enum class InputKind : uint8_t { press, release, hold, rotate, focus_lost, focus_gained };
+enum class InputKind : uint8_t {
+    press,
+    release,
+    hold,
+    rotate,
+    focus_lost,
+    focus_gained,
+    touch_down,
+    touch_move,
+    touch_up,
+    touch_cancel,
+    catalog_changed
+};
 struct InputEvent {
     InputKind kind{};
     int32_t value{};
     uint64_t generation{};
+    int16_t x{}, y{};
+    uint8_t pointer{};
+    uint64_t at{};
 };
 inline constexpr std::string_view inputName(InputKind kind) {
     switch (kind) {
@@ -72,6 +88,16 @@ inline constexpr std::string_view inputName(InputKind kind) {
         return "focus_lost";
     case InputKind::focus_gained:
         return "focus_gained";
+    case InputKind::touch_down:
+        return "touch_down";
+    case InputKind::touch_move:
+        return "touch_move";
+    case InputKind::touch_up:
+        return "touch_up";
+    case InputKind::touch_cancel:
+        return "touch_cancel";
+    case InputKind::catalog_changed:
+        return "catalog_changed";
     }
     return {};
 }
@@ -87,7 +113,10 @@ enum class AppService : uint8_t {
     storage_set,
     storage_delete,
     timer,
-    image
+    image,
+    packages,
+    navigate,
+    system_action
 };
 inline constexpr std::string_view servicePermission(AppService service) {
     switch (service) {
@@ -113,6 +142,11 @@ inline constexpr std::string_view servicePermission(AppService service) {
         return "time.timer.create";
     case AppService::image:
         return "ui.resources";
+    case AppService::packages:
+        return "packages.list";
+    case AppService::navigate:
+    case AppService::system_action:
+        return "ui.navigation";
     }
     return {};
 }

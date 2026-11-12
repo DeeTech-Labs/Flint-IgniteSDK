@@ -39,11 +39,14 @@ def identifier(value):
 
 
 def color(value):
-    if value in ("theme.background", "theme.text", "theme.accent"):
+    if value in ("theme.background", "theme.text", "theme.accent", "theme.surface", "theme.pressed", "theme.muted"):
         return {
             "theme.background": 0xFFFD,
             "theme.text": 0xFFFC,
             "theme.accent": 0xFFFE,
+            "theme.surface": 0xFFFB,
+            "theme.pressed": 0xFFFA,
+            "theme.muted": 0xFFF9,
         }[value]
     n = int(value.lstrip("#"), 16)
     return ((n >> 19) << 11) | (((n >> 10) & 63) << 5) | ((n >> 3) & 31)
@@ -52,7 +55,7 @@ def color(value):
 def scene(nodes):
     ops, strings = [], bytearray()
     for node in nodes:
-        kind = {"rect": 1, "rounded": 2, "line": 3, "text": 4, "bitmap": 5, "image": 6}[
+        kind = {"rect": 1, "rounded": 2, "line": 3, "text": 4, "bitmap": 5, "image": 6, "catalog_icon": 7}[
             node["kind"]
         ]
         data = (
@@ -147,7 +150,7 @@ def atlas(path, size, chars):
 
 def compile_project(project, root):
     allowed = {"id", "name", "publisher", "version", "budget", "permissions",
-               "components", "resources", "capabilities", "logic", "app_api"}
+               "components", "resources", "capabilities", "logic", "app_api", "icons"}
     if set(project) - allowed:
         raise ValueError("unknown project fields: " + ", ".join(sorted(set(project) - allowed)))
     unsupported = {"logic", "javascript", "lua", "code", "script", "styles", "css"}
@@ -166,10 +169,10 @@ def compile_project(project, root):
     if len(permissions) > 64 or not 1 <= len(components) <= 32:
         raise ValueError("manifest budget exceeded")
     name = project["name"]
-    if not name or len(name.encode()) > 96:
+    if not name or len(name.encode()) > 96 or any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise ValueError("name too long")
     manifest = bytearray(
-        b"FLM1" + text(project["id"]) + text(name) + text(project["publisher"])
+        b"FLM2" + text(project["id"]) + text(name) + text(project["publisher"])
     )
     manifest.extend(
         struct.pack(
@@ -230,22 +233,38 @@ def compile_project(project, root):
         if resource.get("format") == "font":
             data = atlas(path, resource.get("size", 20), resource["characters"])
         elif resource.get("format") == "image":
-            from PIL import Image
-
-            image = Image.open(path).convert("RGB")
-            w, h = image.size
-            if w > 320 or h > 320:
-                raise ValueError("image too large")
-            data = struct.pack("<4sHH", b"FLIM", w, h) + b"".join(
-                struct.pack("<H", ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
-                for r, g, b in image.getdata()
-            )
+            from flim import convert
+            data = convert(path, resource, root)
         else:
             data = path.read_bytes()
         sections.append((section, "resource", data))
+    icons = project.get("icons", {})
+    if not isinstance(icons, dict) or set(icons) - {"main", "mask", "light", "dark"}:
+        raise ValueError("icons accepts main, mask, light, dark resource IDs")
+    if icons and not icons.get("main"):
+        raise ValueError("icons requires a main color resource")
+    for key in ("main", "mask", "light", "dark"):
+        ident = icons.get(key, 0)
+        if type(ident) is not int or not 0 <= ident <= 0xffffffff:
+            raise ValueError("invalid icon resource ID")
+        if ident:
+            resource = next((data for section, kind, data in sections
+                             if section == ident and kind == "resource"), None)
+            if resource is None or len(resource) < 16:
+                raise ValueError("icon must reference a FLIM resource")
+            magic, version, fmt, w, h, count, reserved = struct.unpack("<4sBBHHHI", resource[:16])
+            if (magic != b"FLIM" or version != 2 or reserved or (w, h) != (48, 48)
+                    or (fmt != 1 if key == "mask" else fmt not in (2, 3))):
+                raise ValueError("icons require 48x48 FLIM: A4 for mask, color for other variants")
+            expected = 16 + count*3 + h * ((w+1)//2 if fmt == 1 else w if fmt == 2 else w*3)
+            if (len(resource) != expected or (not 1 <= count <= 256 if fmt == 2 else count != 0)
+                    or (fmt == 2 and any(i >= count for i in resource[16+count*3:]))):
+                raise ValueError("invalid FLIM icon data")
+        manifest.extend(struct.pack("<I", ident))
     if "logic" in project:
         logic = project["logic"]
-        if (not isinstance(logic, dict) or set(logic) != {"language", "path"}
+        if (not isinstance(logic, dict) or not {"language", "path"} <= set(logic)
+                or set(logic) - {"language", "path", "includes"}
                 or logic["language"] != "lua"):
             raise ValueError("logic requires language=lua and path")
         if len(components) != 1 or components[0]["type"] not in ("app", "watchface"):
@@ -254,10 +273,19 @@ def compile_project(project, root):
             raise ValueError("Lua requires at least 48 KiB declared internal memory")
         if not project.get("capabilities", 1) & 64:
             raise ValueError("Lua requires capability 64")
-        path = (root / logic["path"]).resolve()
-        if not path.is_relative_to(root.resolve()):
-            raise ValueError("logic escapes project")
-        data = path.read_text(encoding="utf-8").encode("utf-8")
+        includes = logic.get("includes", [])
+        if (not isinstance(includes, list) or len(includes) > 8
+                or any(not isinstance(path, str) or not path for path in includes)):
+            raise ValueError("logic includes must be up to eight source paths")
+        parts = []
+        for source in [*includes, logic["path"]]:
+            path = (root / source).resolve()
+            if not path.is_relative_to(root.resolve()):
+                raise ValueError("logic escapes project")
+            if path.stat().st_size > 16384:
+                raise ValueError("Lua source exceeds 16384 bytes")
+            parts.append(path.read_text(encoding="utf-8"))
+        data = "\n".join(parts).encode("utf-8")
         if not data or len(data) > 16384 or data.startswith(b"\x1b") or b"\0" in data:
             raise ValueError("Lua requires text source of 1..16384 bytes")
         data.decode("utf-8")

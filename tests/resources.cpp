@@ -53,10 +53,16 @@ int main() {
         font.n(255, 1);
     Writer image;
     image.n(0x4d494c46);
+    image.n(2, 1);
+    image.n(3, 1);
     image.n(8, 2);
     image.n(8, 2);
-    for (unsigned i = 0; i < 64; ++i)
+    image.n(0, 2);
+    image.n(0);
+    for (unsigned i = 0; i < 64; ++i) {
         image.n(i + 1, 2);
+        image.n(255, 1);
+    }
     struct SectionData {
         uint32_t id;
         Section type;
@@ -127,7 +133,8 @@ int main() {
     canvas.clip = {2, 3, 3, 2};
     source.reset();
     resources.image(canvas, op);
-    CHECK(source.readBytes == 8 + 3 * 2 * 2 && source.reads == 3);
+    CHECK(resources.decoder().validate() == Error::invalid_state);
+    CHECK(source.readBytes == 16 + 3 * 2 * 3 && source.reads == 3);
     for (int y = 0; y < 8; ++y)
         for (int x = 0; x < 8; ++x)
             CHECK(
@@ -138,6 +145,12 @@ int main() {
     op.x = op.y = -2;
     resources.image(canvas, op);
     CHECK(pixels[0] == 19 && pixels[9] == 28 && pixels[2] == 0xbeef);
+    // Catalog indices must never be interpreted as foreground resource IDs.
+    op.kind = FlintRender::CatalogIcon;
+    op.x = op.y = 0;
+    op.color = 0x1234;
+    resources.image(canvas, op);
+    CHECK(pixels[0] == 0x1234);
     // Layout and centering must not read glyph bitmaps.
     source.reset();
     CHECK(resources.metrics(4, 'A').valid);

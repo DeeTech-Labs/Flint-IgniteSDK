@@ -9,7 +9,7 @@ namespace flint {
 inline constexpr uint16_t ApiVersion = 1, PackageVersion = 1, FaceApiVersion = 1,
                           ProtocolVersion = 1;
 // Development contract identity is independent of the nominal public version.
-inline constexpr uint32_t ContractRevision = 0x20261105;
+inline constexpr uint32_t ContractRevision = 0x20261112;
 inline constexpr uint16_t CompanionDemandVersion = 1;
 inline constexpr uint64_t CapCompanionDemand = 256;
 inline constexpr uint64_t CapSessionClose = 512;

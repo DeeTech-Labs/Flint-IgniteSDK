@@ -39,7 +39,7 @@ static std::array<int64_t, 5> fileVersion(const struct stat &status) {
 #endif
     return result;
 }
-bool File::open(const std::string &path) {
+bool File::open(const std::string &path, bool buffered) {
     close();
 #ifdef _WIN32
     // Keep a verified object open across an atomic rename. Disallow writers while
@@ -64,6 +64,10 @@ bool File::open(const std::string &path) {
     if (!handle)
         return false;
 #endif
+    if (!buffered && setvbuf(handle, nullptr, _IONBF, 0)) {
+        close();
+        return false;
+    }
     struct stat st{};
     if (fstat(fileno(handle), &st) || !S_ISREG(st.st_mode) || st.st_size < 0 ||
         uint64_t(st.st_size) > MaxPackageBytes) {

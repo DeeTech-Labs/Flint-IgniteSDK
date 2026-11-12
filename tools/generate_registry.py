@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Generate the API and permission registries from the v1 specifications."""
 
+import argparse
 import json
+import sys
+sys.dont_write_bytecode = True
+from generation import write_if_changed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +31,11 @@ def validate_services(services):
         names.add(name)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=ROOT / "build/generated/include",
+                        help="generated include root (contains flint/)")
+    args = parser.parse_args(argv)
     services = json.loads((ROOT / "spec/services.json").read_text(encoding="utf-8"))[
         "services"
     ]
@@ -48,7 +56,7 @@ def main():
         [
             "#pragma once",
             "// Generated from spec/permissions.json; do not edit.",
-            '#include "permissions.h"',
+            '#include <flint/permissions.h>',
             "",
             "namespace flint {",
             "inline constexpr Permission PermissionRegistry[]{",
@@ -67,11 +75,11 @@ def main():
             "",
         ]
     )
-    (ROOT / "include/flint/registry.h").write_text(registry)
+    write_if_changed(args.output / "flint/registry.h", registry.encode("utf-8"))
     lines = [
         "#pragma once",
         "// Generated from spec/services.json; do not edit.",
-        '#include "protocol.h"',
+        '#include <flint/protocol.h>',
         "",
         "namespace flint {",
         "struct ServiceDescriptor {",
@@ -92,7 +100,7 @@ def main():
             f'static_assert(uint16_t(Method::{service["name"]}) == {service["id"]});'
         )
     lines.extend(["} // namespace flint", ""])
-    (ROOT / "include/flint/services.h").write_text("\n".join(lines))
+    write_if_changed(args.output / "flint/services.h", "\n".join(lines).encode("utf-8"))
 
 
 if __name__ == "__main__":

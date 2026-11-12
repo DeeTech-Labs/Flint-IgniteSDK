@@ -31,7 +31,7 @@ public:
     ~File() {
         close();
     }
-    bool open(const std::string &path);
+    bool open(const std::string &path, bool buffered = true);
     void close();
     Source source();
     bool unchanged() const;

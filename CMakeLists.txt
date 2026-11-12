@@ -1,18 +1,26 @@
 cmake_minimum_required(VERSION 3.21)
 project(FlintIgniteSDK VERSION 1.0 LANGUAGES C CXX)
 
+include(cmake/FlintGenerate.cmake)
+flint_generate_sdk(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated" EXAMPLES)
+
 add_library(flint_platform STATIC
     src/manifest.cpp
     src/storage.cpp
+    src/flim.cpp
+    src/icons.cpp
     src/resources.cpp
     src/lua_app.cpp
     src/runtime.cpp
     src/core.cpp
+    src/core_ui.cpp
+    src/core_touch.cpp
     src/fonts.cpp
 )
 add_library(Flint::Platform ALIAS flint_platform)
 set_target_properties(flint_platform PROPERTIES EXPORT_NAME Platform)
 target_include_directories(flint_platform PUBLIC
+    $<BUILD_INTERFACE:${FLINT_GENERATED_INCLUDE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_features(flint_platform PUBLIC cxx_std_20)
@@ -47,15 +55,36 @@ if(FLINT_PLATFORM_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_companion.py)
     add_test(NAME registry_validation COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_registry.py)
+    add_executable(flim_tests tests/flim.cpp)
+    target_link_libraries(flim_tests PRIVATE flint_platform)
+    add_test(NAME flim_decoder COMMAND flim_tests)
+    add_executable(icon_tests tests/icons.cpp)
+    target_link_libraries(icon_tests PRIVATE flint_platform)
+    add_test(NAME app_icons COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_icons.py $<TARGET_FILE:icon_tests>)
     add_executable(resource_tests tests/resources.cpp)
     target_link_libraries(resource_tests PRIVATE flint_platform)
     add_test(NAME resource_rendering COMMAND resource_tests)
-    add_executable(core_tests tests/core.cpp)
-    target_link_libraries(core_tests PRIVATE flint_platform)
-    add_test(NAME core_integration
-        COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core.py $<TARGET_FILE:core_tests>
-    )
+    if(FLINT_ENABLE_LUA)
+        add_executable(core_tests tests/core.cpp)
+        target_link_libraries(core_tests PRIVATE flint_platform)
+        add_executable(system_ui_tests tests/system_ui.cpp)
+        target_link_libraries(system_ui_tests PRIVATE flint_platform)
+        add_executable(presentation_tests tests/presentation.cpp)
+        target_link_libraries(presentation_tests PRIVATE flint_platform)
+        add_executable(touch_tests tests/touch.cpp)
+        target_link_libraries(touch_tests PRIVATE flint_platform)
+        add_test(NAME touch_navigation COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_touch.py $<TARGET_FILE:touch_tests>
+            ${CMAKE_CURRENT_BINARY_DIR}/touch-previews)
+        add_test(NAME system_ui COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_system_ui.py $<TARGET_FILE:system_ui_tests>
+            ${CMAKE_CURRENT_BINARY_DIR}/system-ui-previews $<TARGET_FILE:presentation_tests>)
+        add_test(NAME core_integration
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_core.py $<TARGET_FILE:core_tests>
+        )
+    endif()
     add_executable(platform_tests tests/contracts.cpp)
     target_link_libraries(platform_tests PRIVATE flint_platform)
     add_test(NAME contracts COMMAND platform_tests)
@@ -66,8 +95,12 @@ if(FLINT_PLATFORM_TESTS)
 endif()
 
 if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS)
+    set(_flint_sdk_lua_arg)
+    if(NOT FLINT_ENABLE_LUA)
+        set(_flint_sdk_lua_arg --without-lua)
+    endif()
     add_test(NAME sdk_workflow COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sdk.py $<TARGET_FILE:ignite-check>)
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sdk.py $<TARGET_FILE:ignite-check> ${_flint_sdk_lua_arg})
 endif()
 
 # Standalone SDK installation and dependency exports.
@@ -75,7 +108,11 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 install(TARGETS flint_platform EXPORT FlintPlatformTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "registry.h" EXCLUDE PATTERN "services.h" EXCLUDE)
+install(FILES "${FLINT_GENERATED_INCLUDE_DIR}/flint/registry.h"
+    "${FLINT_GENERATED_INCLUDE_DIR}/flint/services.h"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/flint)
 install(EXPORT FlintPlatformTargets NAMESPACE Flint::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/FlintPlatform)
 configure_package_config_file(cmake/FlintPlatformConfig.cmake.in
@@ -89,7 +126,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/FlintPlatformConfig.cmake
 if(FLINT_SDK_TOOLS)
     install(TARGETS ignite-check ignite-run RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     install(PROGRAMS tools/ignite.py DESTINATION ${CMAKE_INSTALL_BINDIR} RENAME ignite)
-    install(FILES tools/compile_ignite.py tools/build_package.py
+    install(FILES tools/compile_ignite.py tools/build_package.py tools/flim.py
         DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
@@ -153,4 +190,22 @@ if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS AND FLINT_ENABLE_LUA)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_scenarios.py
         $<TARGET_FILE:ignite-run> $<TARGET_FILE:ignite-check>)
     set_tests_properties(sdk_scenarios PROPERTIES TIMEOUT 30)
+endif()
+
+if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(launcher_icon_tests tests/launcher_icons.cpp)
+    target_link_libraries(launcher_icon_tests PRIVATE flint_platform)
+    add_test(NAME launcher_icons COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_icons.py $<TARGET_FILE:launcher_icon_tests>
+        ${CMAKE_CURRENT_BINARY_DIR}/launcher-icons.ppm)
+    set_tests_properties(launcher_icons PROPERTIES TIMEOUT 40)
+endif()
+
+if(FLINT_PLATFORM_TESTS)
+    add_test(NAME generation_isolation COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_generation.py)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/temp")
+    get_property(_flint_tests DIRECTORY PROPERTY TESTS)
+    set_tests_properties(${_flint_tests} PROPERTIES ENVIRONMENT
+        "FLINT_FACTORY_DIR=${FLINT_FACTORY_DIR};FLINT_EXAMPLES_DIR=${FLINT_EXAMPLES_DIR};PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
 endif()
