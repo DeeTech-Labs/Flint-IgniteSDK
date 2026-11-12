@@ -146,8 +146,35 @@ int main(int argc, char **argv) {
     CHECK(touch(InputKind::touch_move, 80, 120));
     CHECK(touch(InputKind::touch_up, 80, 120));
     frames(12);
-    CHECK(touch(InputKind::touch_down, 206, 105));
-    CHECK(touch(InputKind::touch_up, 206, 105));
+    // Filesystem enumeration order is unspecified; find Settings in the actual catalog.
+    unsigned catalogIndex = 0, settingsIndex = UINT32_MAX;
+    core.packages().visit([&](const Installed &installed) {
+        for (const auto &component : installed.manifest.components) {
+            if (!launcherApp(installed, component))
+                continue;
+            if (installed.manifest.id == "system.settings")
+                settingsIndex = catalogIndex;
+            ++catalogIndex;
+        }
+        return true;
+    });
+    CHECK(settingsIndex != UINT32_MAX);
+    CHECK(core.postInput({InputKind::rotate, int32_t(settingsIndex), core.runtime().generation()}) == Error::ok);
+    core.tick();
+    frames(20);
+    FlintRender::Scene apps;
+    CHECK(core.scene(apps) == Error::ok);
+    int settingsX = -1, settingsY = -1;
+    for (unsigned i = 0; i < apps.count; ++i) {
+        const auto &op = apps.ops[i];
+        if (op.kind == FlintRender::CatalogIcon && op.extra == settingsIndex + 1) {
+            settingsX = op.x + 24;
+            settingsY = op.y + 24;
+        }
+    }
+    CHECK(settingsX >= 0 && settingsY >= 56 && settingsY < 240);
+    CHECK(touch(InputKind::touch_down, settingsX, settingsY));
+    CHECK(touch(InputKind::touch_up, settingsX, settingsY));
     CHECK(core.runtime().manifest().id == "system.settings");
     CHECK(image(core, output / "settings.ppm"));
     CHECK(touch(InputKind::touch_down, 230, 78));
