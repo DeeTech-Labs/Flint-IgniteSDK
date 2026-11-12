@@ -70,6 +70,7 @@ class Runtime {
     size_t inputHead_{}, inputSize_{};
     Error appCall(
         AppService service, std::string_view key, std::string_view value, AppReply &reply);
+    Error sensorCall(const sensors::Request &, sensors::Reply &);
     std::array<uint16_t, FlintRender::MaxData> bindingEnds_{};
     Error launchValidated(File &file, Package &package, Manifest manifest,
         std::string_view component, MemoryBudget available, uint64_t capabilities);

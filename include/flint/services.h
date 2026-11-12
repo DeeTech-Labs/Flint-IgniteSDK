@@ -1,6 +1,6 @@
 #pragma once
 // Generated from spec/services.json; do not edit.
-#include "protocol.h"
+#include <flint/protocol.h>
 
 namespace flint {
 struct ServiceDescriptor {
@@ -36,6 +36,9 @@ inline constexpr ServiceDescriptor ServiceRegistry[]{
     ServiceDescriptor{Method::companion_sample, "companion_sample", true},
     ServiceDescriptor{Method::companion_state, "companion_state", false},
     ServiceDescriptor{Method::session_close, "session_close", true},
+    ServiceDescriptor{Method::sensor_catalog, "sensor_catalog", false},
+    ServiceDescriptor{Method::sensor_diagnostic, "sensor_diagnostic", true},
+    ServiceDescriptor{Method::time_status, "time_status", false},
 };
 
 static_assert(uint16_t(Method::hello) == 1);
@@ -64,4 +67,7 @@ static_assert(uint16_t(Method::companion_bind) == 23);
 static_assert(uint16_t(Method::companion_sample) == 24);
 static_assert(uint16_t(Method::companion_state) == 25);
 static_assert(uint16_t(Method::session_close) == 26);
+static_assert(uint16_t(Method::sensor_catalog) == 27);
+static_assert(uint16_t(Method::sensor_diagnostic) == 28);
+static_assert(uint16_t(Method::time_status) == 29);
 } // namespace flint

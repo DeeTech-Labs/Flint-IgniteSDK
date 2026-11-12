@@ -226,8 +226,13 @@ Error PackageManager::begin() {
         auto path = root_ + "/" + ref;
         auto object = readText(path);
         Manifest current;
-        if (!objectName(object) || inspect(root_ + "/" + object, current) != Error::ok ||
-            current.id != id) {
+        const auto status =
+            objectName(object) ? inspect(root_ + "/" + object, current) : Error::invalid_package;
+        // A firmware contract/capability change is not evidence of storage corruption.
+        // Keep both references and objects for explicit package upgrade or firmware recovery.
+        if (status == Error::incompatible_contract || status == Error::not_supported)
+            continue;
+        if (status != Error::ok || current.id != id) {
             auto previous = readText(path + ".previous");
             Manifest backup;
             if (objectName(previous) && inspect(root_ + "/" + previous, backup) == Error::ok &&
@@ -366,7 +371,10 @@ Error PackageManager::locate(
         return Error::source_unavailable;
     const auto path = root_ + "/" + object;
     Manifest manifest;
-    if (inspectOpened(path, manifest, file, package) != Error::ok || manifest.id != id)
+    const auto error = inspectOpened(path, manifest, file, package);
+    if (error == Error::incompatible_contract || error == Error::not_supported)
+        return error;
+    if (error != Error::ok || manifest.id != id)
         return Error::source_unavailable;
     result = {std::move(manifest), path, false};
     return Error::ok;

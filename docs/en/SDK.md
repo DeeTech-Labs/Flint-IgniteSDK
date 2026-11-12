@@ -1,5 +1,7 @@
 [Русский оригинал](../ru/SDK.md)
 
+[Sensors, permissions and bounded Lua API](SENSORS.md)
+
 # Flint IgniteSDK
 
 The container builder rejects packages larger than 1 MiB (including the header and index) and manifests larger than 4096 bytes. Before writing headers, the service registry generator validates unique names and IDs, the ID range 1..65535, and the boolean type of `mutates`.
@@ -36,7 +38,7 @@ market admission, or battery-life guarantees.
 A Lua package has exactly one app/watchface component, capability bit 64, 48..144 KiB
 of declared internal memory and 1..100000 Lua instructions per callback. Source is
 limited to 16 KiB. Binary chunks are rejected. The current development contract is
-0x20261112; regenerate packages using this SDK. There is no previous-format loader.
+0x20261113; regenerate packages using this SDK. There is no previous-format loader.
 
 The source returns a table with `update(dt_ms, pressed)`. It is called once at load
 with zero elapsed time, then explicitly by Runtime or the Core scheduler. Elapsed
@@ -114,7 +116,7 @@ Marketplace signatures and publication remain separate work.
 
 ## Application API 1: input, state and services
 
-`"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua project's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Current revision `0x20261112` requires FLM2/FLIM v2 and rebuilding all packages and consumers. No legacy decoder is provided; see [FLIM](FLIM.md). C++ ABI compatibility is not preserved.
+`"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua project's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Current revision `0x20261113` requires FLM2/FLIM v2 and rebuilding all packages and consumers. No legacy decoder is provided; see [FLIM](FLIM.md). C++ ABI compatibility is not preserved.
 
 New functions require `CapAppApi`. Invalid argument counts/types, ranges and UTF-8 terminate the handler with a diagnostic. Service/access failures return numeric `flint::Error` codes: 0=ok, 4=not_supported, 5=permission_denied, 7=source_unavailable, 9=quota_exceeded; see `include/flint/contracts.h` for the complete enumeration. No standard libraries or unrestricted `require`, `debug`, `io`, `os` are exposed.
 
@@ -192,7 +194,7 @@ Persistent `reduce_motion` accepts `0/1` through standard `settings_get/settings
 
 ## Application icons
 
-See [FLIM.md](FLIM.md) for FLIM v2, FLM2 manifest resources, theme selection, converter commands and bounded memory. Example: `examples/icons/project.json`. `ignite.catalog(index)` returns `name, target, error`; the placeholder symbol is removed. `catalog_icon` nodes support `ignite.set(node, "catalog", index)`. All consumers and packages require revision `0x20261112`.
+See [FLIM.md](FLIM.md) for FLIM v2, FLM2 manifest resources, theme selection, converter commands and bounded memory. Example: `examples/icons/project.json`. `ignite.catalog(index)` returns `name, target, error`; the placeholder symbol is removed. `catalog_icon` nodes support `ignite.set(node, "catalog", index)`. All consumers and packages require revision `0x20261113`.
 
 Factory Clock and Settings provide authored color INDEX8 icons and separate A4 masks. Source PNGs live in `system/assets/`; reproduce their geometry with `python tools/build_system_icons.py`, then rebuild packages using `python tools/build_system.py`. These run on a Pillow-equipped host, never in firmware. Read-only numeric `utc_offset_minutes` under `system.settings.read` provides a typed UTC value; the original string `utc_offset` remains available.
 
@@ -215,4 +217,4 @@ Unchanged outputs retain their timestamps. Changed files publish through individ
 
 `build_system_icons.py --output <dir>` and `build_builtin_fonts.py --font-dir <fonts> --output <dir>` also default to `build/generated/`. Updating maintained PNG/font sources requires a separate reviewed copy, never an implicit build side effect. Existing source factory/sample packages and headers remain snapshots for older consumers; new CMake builds neither refresh them nor use them instead of current generated artifacts.
 
-Current touch/UI contracts use `ContractRevision=0x20261112` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. Flare still reading source `factory/` and `examples/` requires a separate resource integration migration; the portable `Flint::Platform` target already uses the new scheme.
+Current touch/UI contracts use `ContractRevision=0x20261113` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. Flare still reading source `factory/` and `examples/` requires a separate resource integration migration; the portable `Flint::Platform` target already uses the new scheme.

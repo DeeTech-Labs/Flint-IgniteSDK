@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import struct
@@ -81,6 +82,30 @@ def scenario_script(path):
             if type(step.get("enabled")) is not bool:
                 raise ValueError("permission enabled must be boolean")
             line = op + " " + name + " " + encoded(step.get("scope", "")) + " " + str(int(step["enabled"]))
+        elif op == "sensor_value":
+            fields |= {"source", "channel", "x", "y", "z"}
+            channels = ("temperature", "pressure", "humidity", "ambient_light", "acceleration", "angular_velocity")
+            channel = step.get("channel")
+            if isinstance(channel, str):
+                if channel not in channels: raise ValueError("invalid sensor channel")
+                channel = channels.index(channel)
+            channel_text = integer(channel, 0, 5)
+            components = [step.get("x"), step.get("y", 0), step.get("z", 0)]
+            for component in components:
+                if type(component) not in (int, float) or abs(component) > 1e12 or not math.isfinite(component):
+                    raise ValueError("sensor components must be finite and within +/-1e12")
+            if channel < 4 and (components[1] or components[2]):
+                raise ValueError("scalar sensor cannot have y/z components")
+            line = op + " " + integer(step.get("source"), 1, 65535) + " " + channel_text + " " + " ".join(format(v, ".17g") for v in components)
+        elif op == "sensor_state":
+            fields |= {"source", "status", "reason"}
+            status = integer(step.get("status"), 0, 5)
+            reason = integer(step.get("reason", 0 if status == "2" else 7), 0, 16)
+            if status == "2" and reason != "0": raise ValueError("valid sample must have success reason")
+            line = op + " " + integer(step.get("source"), 1, 65535) + " " + status + " " + reason
+        elif op == "sensor_reset":
+            fields |= {"source"}
+            line = op + " " + integer(step.get("source"), 1, 65535)
         else:
             raise ValueError("unknown scenario operation")
         if set(step) - fields:
@@ -148,14 +173,18 @@ def main(argv=None):
             script = scenario_script(args.scenario) if args.scenario else None
             if args.scenario and args.image.resolve() == args.scenario.resolve():
                 raise ValueError("image must not overwrite scenario")
-            with tempfile.TemporaryDirectory(prefix="ignite-scenario-") as directory:
+            temporary_root = Path(__file__).resolve().parents[1] / "temp"
+            temporary_root.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="ignite-scenario-", dir=temporary_root) as directory:
                 command = [str(args.runner.resolve()), str(args.package.resolve()),
                     str(args.frames), str(args.press_every), str(args.image.resolve())]
                 if script is not None:
                     storage = args.storage.resolve() if args.storage else Path(directory) / "store"
                     factory = args.factory.resolve() if args.factory else Path(directory) / "factory"
                     command += ["--scenario", str(storage), str(factory)]
-                result = subprocess.run(command, input=script,
+                environment = os.environ.copy()
+                environment.update(TMPDIR=directory, TEMP=directory, TMP=directory)
+                result = subprocess.run(command, input=script, env=environment,
                     capture_output=True, text=True, encoding="utf-8")
             if result.returncode:
                 raise ValueError(result.stderr.strip() or "simulation failed")

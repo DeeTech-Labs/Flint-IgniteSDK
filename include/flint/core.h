@@ -9,7 +9,7 @@ inline constexpr uint64_t CapDeclarative = 1, CapResources = 2, CapPackages = 4,
                           CapUsb = 16, CapBle = 32;
 #ifdef FLINT_ENABLE_LUA
 inline constexpr uint64_t HostLogicCapabilities =
-    CapLua | CapAppApi | CapTouchEvents | CapInteractiveUi;
+    CapLua | CapAppApi | CapTouchEvents | CapInteractiveUi | sensors::Capability;
 #else
 inline constexpr uint64_t HostLogicCapabilities = 0;
 #endif
@@ -21,6 +21,14 @@ struct Platform {
     uint64_t capabilities{CapDeclarative | CapResources | CapPackages | CapMetrics |
         HostLogicCapabilities | CapCompanionDemand | CapSessionClose};
     std::function<uint64_t()> monotonic;
+    // Non-owning, outlives Core. Methods only exchange bounded state, never wait for hardware.
+    sensors::Backend *sensors{};
+    std::function<Error(uint64_t &)> rtc_read;
+    std::function<Error(uint64_t, uint64_t &)> rtc_set;
+    std::function<Error(uint64_t, bool &)> rtc_result;
+    std::function<Error(unsigned, unsigned)> beep;
+    std::function<Error(bool)> mute_apply;
+    std::function<Error(unsigned)> brightness_apply;
     std::function<uint64_t()> free_storage;
     std::function<Values()> diagnostics;
     std::function<Bytes(std::string_view)> pairing;
@@ -59,7 +67,35 @@ struct PermissionRecord {
 class Core {
     Platform platform_;
     PackageManager packages_;
+    sensors::Broker sensors_;
     Runtime runtime_;
+    Error authorizeApp(std::string_view name, std::string_view scope = {}, uint64_t session = 0);
+    Error sensorCall(const sensors::Request &, sensors::Reply &);
+    bool sensorEvent(sensors::Event &);
+    void sensorOwner();
+    struct SensorDiagnostic {
+        uint64_t session{}, expires{}, next{}, lastSample{}, lastGeneration{};
+        sensors::SourceId source{};
+        sensors::Mask channels{};
+        uint32_t interval{};
+    } sensorDiagnostic_;
+    void stopSensorDiagnostic();
+    Error handleSensor(Method, Reader &, Writer &, const Session &);
+    uint64_t rtcToken_{}, rtcDeadline_{}, rtcNext_{UINT64_MAX};
+    Error rtcError_{Error::ok};
+    uint8_t rtcState_{};
+    bool rtcBootAccepted_{}, trustedTimeSet_{};
+    void systemTick(uint64_t at);
+    Error systemSetting(std::string_view key, std::string_view value);
+    sensors::SourceId lightSource_{};
+    double filteredLux_{};
+    uint64_t lightSample_{}, lightGeneration_{};
+    bool luxValid_{};
+    unsigned brightness_{101}, brightnessOverride_{};
+    uint64_t brightnessAt_{}, brightnessUntil_{}, brightnessOwner_{};
+    uint64_t systemNext_{UINT64_MAX};
+    Error brightnessError_{Error::ok};
+    Error muteError_{Error::ok};
     IconCache icons_;
     Values settings_, theme_, locale_;
     EventBus events_;

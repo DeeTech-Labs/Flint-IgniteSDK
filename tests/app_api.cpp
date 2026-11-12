@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
     CHECK(reader.done());
     CHECK(diagnostic["logic_package"] == fault && diagnostic["logic_phase"] == "event");
     CHECK(diagnostic["logic_message"].find("instruction limit") != std::string::npos);
-    CHECK(diagnostic["logic_log_0"] == "before failure");
+    CHECK(!diagnostic.contains("logic_log_0")); // Logs need an explicit diagnostic lease.
     CHECK(core.launch(id, "main") == Error::ok);
     CHECK(core.packages().remove(id) == Error::ok);
     CHECK(!std::filesystem::exists(root + "/app-" + id + ".kv"));

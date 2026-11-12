@@ -157,6 +157,24 @@
             "name": "session_close",
             "mutates": true,
             "trust": "authenticated_companion"
+        },
+        {
+            "id": 27,
+            "name": "sensor_catalog",
+            "mutates": false,
+            "trust": "authenticated_companion"
+        },
+        {
+            "id": 28,
+            "name": "sensor_diagnostic",
+            "mutates": true,
+            "trust": "authenticated_companion"
+        },
+        {
+            "id": 29,
+            "name": "time_status",
+            "mutates": false,
+            "trust": "authenticated_companion"
         }
     ]
 }

@@ -7,7 +7,7 @@ import json
 import struct
 from pathlib import Path
 
-REVISION = 0x20261112
+REVISION = 0x20261113
 MAX_PACKAGE_BYTES = 1024 * 1024
 MAX_MANIFEST_BYTES = 4096
 TYPES = {

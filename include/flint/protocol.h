@@ -29,7 +29,10 @@ enum class Method : uint16_t {
     companion_bind = 23,
     companion_sample = 24,
     companion_state = 25,
-    session_close = 26
+    session_close = 26,
+    sensor_catalog = 27,
+    sensor_diagnostic = 28,
+    time_status = 29
 };
 struct Frame {
     Method method{};

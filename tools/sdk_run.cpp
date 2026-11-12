@@ -1,7 +1,9 @@
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <flint/core.h>
+#include <flint/sensor_simulation.h>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -12,6 +14,11 @@ namespace {
 bool number(std::string_view text, uint64_t &out) {
     const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+bool real(std::string_view text, double &out) {
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size() &&
+        std::isfinite(out) && std::abs(out) <= 1e12;
 }
 bool hex(std::string_view text, std::string &out) {
     if (text == "-") {
@@ -68,6 +75,45 @@ int main(int argc, char **argv) {
         flint::validateApplication(package, manifest, platform.memory, platform.capabilities) !=
             flint::Error::ok)
         return 1;
+    flint::sensors::Simulation sensors;
+    if (manifest.capabilities & flint::sensors::Capability) {
+        using namespace flint::sensors;
+        Source source;
+        source.id = 1;
+        source.channels = 7;
+        source.temperature = TemperatureKind::ambient;
+        std::array<Vector3, 6> values{};
+        values[0].x = 23.5;
+        values[1].x = 101325;
+        values[2].x = 45;
+        if (sensors.add(source, values) != flint::Error::ok)
+            return 1;
+        source = {};
+        source.id = 2;
+        source.channels = bit(Channel::ambient_light);
+        values = {};
+        values[3].x = 100;
+        if (sensors.add(source, values) != flint::Error::ok)
+            return 1;
+        source = {};
+        source.id = 3;
+        source.channels = bit(Channel::acceleration) | bit(Channel::angular_velocity);
+        source.coordinates = Coordinates::device;
+        values = {};
+        values[4].z = 9.80665;
+        if (sensors.add(source, values) != flint::Error::ok)
+            return 1;
+        source = {};
+        source.id = 4;
+        source.channels = bit(Channel::temperature);
+        source.temperature = TemperatureKind::die;
+        source.priority = 10;
+        values = {};
+        values[0].x = 35;
+        if (sensors.add(source, values) != flint::Error::ok)
+            return 1;
+        platform.sensors = &sensors;
+    }
     Temporary temporary;
     std::string storage, factory;
     if (scenario) {
@@ -214,6 +260,36 @@ int main(int argc, char **argv) {
                     {flint::Method::permission_set, uint32_t(steps), false, writer.data}, session);
                 flint::Reader reader{response.payload};
                 error = flint::Error(reader.n(2));
+            } else if (op == "sensor_value") {
+                std::string x, y, z;
+                input >> a >> b >> x >> y >> z;
+                uint64_t channel{};
+                flint::sensors::Vector3 vector;
+                valid = number(a, value) && value && value <= UINT16_MAX && number(b, channel) &&
+                    channel < 6 && real(x, vector.x) && real(y, vector.y) && real(z, vector.z);
+                if (valid)
+                    error = sensors.setValue(
+                        flint::sensors::SourceId(value), flint::sensors::Channel(channel), vector);
+            } else if (op == "sensor_state") {
+                input >> a >> b >> c;
+                uint64_t status{}, reason{};
+                valid = number(a, value) && value && value <= UINT16_MAX && number(b, status) &&
+                    status <= 5 && number(c, reason) &&
+                    reason <= uint16_t(flint::Error::execution_limit);
+                if (valid)
+                    error = sensors.status(flint::sensors::SourceId(value),
+                        flint::sensors::Status(status), flint::Error(reason));
+            } else if (op == "sensor_reset") {
+                input >> a;
+                valid = number(a, value) && value && value <= UINT16_MAX;
+                bool present = false;
+                std::array<flint::sensors::Source, flint::sensors::MaxSources> catalog{};
+                const auto count = sensors.catalog(catalog);
+                for (size_t i = 0; i < count; ++i)
+                    present |= catalog[i].id == value;
+                valid &= present;
+                if (valid)
+                    sensors.reset(flint::sensors::SourceId(value));
             } else
                 valid = false;
             if (input >> trailing)
@@ -256,6 +332,7 @@ int main(int argc, char **argv) {
     if (!image)
         return 1;
     std::cout << "{\"frames\":" << (scenario ? steps : frames)
+              << ",\"sensor_simulation\":" << (platform.sensors ? "true" : "false")
               << ",\"pixel_hash\":" << FlintRender::pixelHash(canvas)
               << ",\"lua_peak_bytes\":" << core->runtime().logicPeak() << "}\n";
 }

@@ -27,6 +27,7 @@ struct LuaApp::Impl {
     std::string_view pendingEvent;
     int32_t pendingValue{};
     InputEvent pendingInput{};
+    const sensors::Event *pendingSensor{}; // Borrowed only for the protected synchronous callback.
     uint64_t clock{}, lastUpdate{}, nextUpdate{}, interval{33};
     struct Timer {
         uint64_t due{}, period{};
@@ -387,6 +388,198 @@ struct LuaApp::Impl {
         std::copy(value.begin(), value.end(), d.log[d.logCount++].begin());
         return status(state, Error::ok);
     }
+    static void field(lua_State *state, const char *key, uint64_t value) {
+        lua_pushinteger(state, lua_Integer(value));
+        lua_setfield(state, -2, key);
+    }
+    static void textField(lua_State *state, const char *key, std::string_view value) {
+        lua_pushlstring(state, value.data(), value.size());
+        lua_setfield(state, -2, key);
+    }
+    static void sensorRead(lua_State *state, const sensors::Read &reading) {
+        const auto &sample = reading.sample;
+        lua_createtable(state, 0, 10);
+        field(state, "source_id", sample.source);
+        field(state, "generation", sample.generation);
+        field(state, "sample_id", sample.sampleId);
+        field(state, "timestamp_ms", sample.at);
+        field(state, "age_ms", reading.ageMs);
+        field(state, "status", uint8_t(sample.status));
+        field(state, "reason", uint16_t(sample.reason));
+        field(state, "channels", sample.channels);
+        lua_pushboolean(state, reading.lastKnown);
+        lua_setfield(state, -2, "last_known");
+        lua_pushboolean(state, reading.simulation);
+        lua_setfield(state, -2, "simulation");
+        // No numeric placeholders on pending/error reads. Last-known is explicit and tagged.
+        if (reading.error == Error::ok || reading.lastKnown) {
+            lua_createtable(state, 0, 6);
+            for (unsigned i = 0; i < 6; ++i) {
+                if (!(sample.channels & (1u << i)))
+                    continue;
+                const auto channel = sensors::Channel(i);
+                const auto &v = sample.values[i];
+                lua_createtable(state, 0, 4);
+                lua_pushnumber(state, v.x);
+                lua_setfield(state, -2, "x");
+                if (i >= unsigned(sensors::Channel::acceleration)) {
+                    lua_pushnumber(state, v.y);
+                    lua_setfield(state, -2, "y");
+                    lua_pushnumber(state, v.z);
+                    lua_setfield(state, -2, "z");
+                }
+                textField(state, "unit", sensors::unit(channel));
+                const auto name = sensors::name(channel);
+                lua_setfield(state, -2, name.data());
+            }
+            lua_setfield(state, -2, "values");
+        }
+    }
+    static sensors::SourceId sensorSource(lua_State *state, int index) {
+        const auto value = integer(state, index);
+        if (value < 0 || value > UINT16_MAX)
+            luaL_error(state, "invalid source");
+        return sensors::SourceId(value);
+    }
+    static sensors::Mask sensorChannels(lua_State *state, int index) {
+        const auto value = integer(state, index);
+        if (value <= 0 || value > sensors::AllChannels)
+            luaL_error(state, "invalid channel mask");
+        return sensors::Mask(value);
+    }
+    static Error sensorCall(
+        lua_State *state, const sensors::Request &request, sensors::Reply &reply) {
+        auto &app = self(state);
+        if (!app.host.enabled || !app.host.sensor)
+            return Error::not_supported;
+        if (app.nativeCalls >= 32)
+            return Error::quota_exceeded;
+        ++app.nativeCalls;
+        return app.host.sensor(app.host.context, request, reply);
+    }
+    static int sensorCatalog(lua_State *state) {
+        arguments(state, 1);
+        const auto index = integer(state, 1);
+        if (index < 1 || index > sensors::MaxSources)
+            return luaL_error(state, "invalid catalog index");
+        sensors::Request request;
+        request.operation = sensors::Operation::catalog;
+        request.index = uint8_t(index - 1);
+        sensors::Reply reply;
+        const auto error = sensorCall(state, request, reply);
+        if (error == Error::ok) {
+            const auto &source = reply.descriptor;
+            lua_createtable(state, 0, 11);
+            field(state, "source_id", source.id);
+            field(state, "channels", source.channels);
+            field(state, "min_interval_ms", source.minIntervalMs);
+            field(state, "default_interval_ms", source.defaultIntervalMs);
+            field(state, "max_interval_ms", source.maxIntervalMs);
+            field(state, "stale_after_ms", source.staleAfterMs);
+            field(state, "temperature_kind", uint8_t(source.temperature));
+            field(state, "coordinates", uint8_t(source.coordinates));
+            lua_pushnumber(state, source.accelerationRange);
+            lua_setfield(state, -2, "acceleration_range_m_s2");
+            lua_pushnumber(state, source.angularVelocityRange);
+            lua_setfield(state, -2, "angular_velocity_range_rad_s");
+            lua_pushboolean(state, source.mountingVerified);
+            lua_setfield(state, -2, "mounting_verified");
+            lua_pushboolean(state, source.simulation);
+            lua_setfield(state, -2, "simulation");
+        } else
+            lua_pushnil(state);
+        status(state, error);
+        return 2;
+    }
+    static int sensorCached(lua_State *state) {
+        arguments(state, 3);
+        if (lua_type(state, 3) != LUA_TBOOLEAN)
+            return luaL_error(state, "last_known boolean required");
+        sensors::Request request;
+        request.operation = sensors::Operation::read;
+        request.source = sensorSource(state, 1);
+        request.channels = sensorChannels(state, 2);
+        request.lastKnown = lua_toboolean(state, 3);
+        sensors::Reply reply;
+        const auto error = sensorCall(state, request, reply);
+        if (error == Error::ok || error == Error::source_unavailable)
+            sensorRead(state, reply.reading);
+        else
+            lua_pushnil(state);
+        status(state, error);
+        return 2;
+    }
+    static int sensorDemand(lua_State *state, sensors::Operation operation) {
+        arguments(state, 3);
+        sensors::Request request;
+        request.operation = operation;
+        request.source = sensorSource(state, 1);
+        request.channels = sensorChannels(state, 2);
+        const auto value = integer(state, 3);
+        if (value < 1 || value > 60000)
+            return luaL_error(state, "invalid interval or timeout");
+        request.intervalMs = request.timeoutMs = uint32_t(value);
+        sensors::Reply reply;
+        const auto error = sensorCall(state, request, reply);
+        if (error == Error::ok)
+            lua_pushinteger(state, lua_Integer(reply.handle));
+        else
+            lua_pushnil(state);
+        status(state, error);
+        return 2;
+    }
+    static int sensorRefresh(lua_State *state) {
+        return sensorDemand(state, sensors::Operation::refresh);
+    }
+    static int sensorSubscribe(lua_State *state) {
+        return sensorDemand(state, sensors::Operation::subscribe);
+    }
+    static int sensorUnsubscribe(lua_State *state) {
+        arguments(state, 1);
+        const auto handle = integer(state, 1);
+        if (handle <= 0)
+            return luaL_error(state, "invalid subscription handle");
+        sensors::Request request;
+        request.operation = sensors::Operation::unsubscribe;
+        request.handle = uint64_t(handle);
+        sensors::Reply reply;
+        return status(state, sensorCall(state, request, reply));
+    }
+    static int output(lua_State *state, AppService service) {
+        arguments(state, 2);
+        const auto first = integer(state, 1), second = integer(state, 2);
+        if (first < 0 || first > 10000 || second < 1 || second > 5000)
+            return luaL_error(state, "invalid output range");
+        std::array<char, 12> key{}, value{};
+        const auto a = std::to_chars(key.data(), key.data() + key.size(), first);
+        const auto b = std::to_chars(value.data(), value.data() + value.size(), second);
+        AppReply reply;
+        return status(state,
+            call(state, service, {key.data(), size_t(a.ptr - key.data())},
+                {value.data(), size_t(b.ptr - value.data())}, reply));
+    }
+    static int beep(lua_State *state) {
+        return output(state, AppService::beep);
+    }
+    static int brightness(lua_State *state) {
+        return output(state, AppService::brightness);
+    }
+    static int callSensor(lua_State *state) {
+        lua_pushliteral(state, "sensor");
+        lua_rawget(state, 1);
+        if (lua_isnil(state, -1))
+            return 0;
+        if (!lua_isfunction(state, -1))
+            return luaL_error(state, "sensor must be a function");
+        const auto &event = *self(state).pendingSensor;
+        lua_pushinteger(state, lua_Integer(event.handle));
+        sensorRead(state, event.reading);
+        status(state, event.reading.error);
+        lua_pushinteger(state, event.drops);
+        lua_pushboolean(state, event.refreshFinished);
+        lua_call(state, 5, 0);
+        return 0;
+    }
     static int environment(lua_State *state) {
         lua_createtable(state, 0, 10);
         lua_pushcfunction(state, set);
@@ -412,6 +605,28 @@ struct LuaApp::Impl {
             lua_setfield(state, -2, "timer");
             lua_pushcfunction(state, log);
             lua_setfield(state, -2, "log");
+            if (self(state).host.outputs & 1) {
+                lua_pushcfunction(state, beep);
+                lua_setfield(state, -2, "beep");
+            }
+            if (self(state).host.outputs & 2) {
+                lua_pushcfunction(state, brightness);
+                lua_setfield(state, -2, "brightness");
+            }
+            if (self(state).host.sensor) {
+                lua_createtable(state, 0, 5);
+                lua_pushcfunction(state, sensorCatalog);
+                lua_setfield(state, -2, "catalog");
+                lua_pushcfunction(state, sensorCached);
+                lua_setfield(state, -2, "read");
+                lua_pushcfunction(state, sensorRefresh);
+                lua_setfield(state, -2, "refresh");
+                lua_pushcfunction(state, sensorSubscribe);
+                lua_setfield(state, -2, "subscribe");
+                lua_pushcfunction(state, sensorUnsubscribe);
+                lua_setfield(state, -2, "unsubscribe");
+                lua_setfield(state, -2, "sensors");
+            }
         }
         lua_setglobal(state, "ignite");
         return 0;
@@ -616,6 +831,23 @@ Error LuaApp::event(std::string_view kind, int32_t value, const InputEvent *inpu
     (void)kind;
     (void)value;
     (void)input;
+    return Error::not_supported;
+#endif
+}
+Error LuaApp::sensorEvent(const sensors::Event &event) {
+#ifdef FLINT_ENABLE_LUA
+    if (!impl_ || !impl_->batch)
+        return Error::invalid_state;
+    auto &app = *impl_;
+    app.changed = false;
+    app.pendingSensor = &event;
+    lua_pushcfunction(app.state, Impl::callSensor);
+    lua_pushvalue(app.state, 1);
+    const auto result = lua_pcall(app.state, 1, 0, 0);
+    app.pendingSensor = nullptr;
+    return finish(result, "sensor");
+#else
+    (void)event;
     return Error::not_supported;
 #endif
 }

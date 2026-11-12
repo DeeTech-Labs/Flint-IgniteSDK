@@ -150,12 +150,17 @@ def atlas(path, size, chars):
 
 def compile_project(project, root):
     allowed = {"id", "name", "publisher", "version", "budget", "permissions",
-               "components", "resources", "capabilities", "logic", "app_api", "icons"}
+               "components", "resources", "capabilities", "logic", "app_api", "sensor_api", "icons"}
     if set(project) - allowed:
         raise ValueError("unknown project fields: " + ", ".join(sorted(set(project) - allowed)))
     unsupported = {"logic", "javascript", "lua", "code", "script", "styles", "css"}
     if (unsupported - {"logic"}).intersection(project):
         raise ValueError("executable code and stylesheet compilation are not supported yet")
+    sensor_api = project.get("sensor_api", 0)
+    if type(sensor_api) is not int or sensor_api not in (0, 1):
+        raise ValueError("sensor_api must be 0 or 1")
+    if sensor_api and not project.get("app_api", 0):
+        raise ValueError("sensor_api requires app_api")
     app_api = project.get("app_api", 0)
     if type(app_api) is not int or app_api not in (0, 1):
         raise ValueError("app_api must be 0 or 1")
@@ -181,7 +186,7 @@ def compile_project(project, root):
             budget.get("internal", 24 * 1024),
             budget.get("external", 0),
             budget.get("instructions", 4096),
-            project.get("capabilities", 1) | (128 if app_api else 0),
+            project.get("capabilities", 1) | (128 if app_api else 0) | (8192 if sensor_api else 0),
         )
     )
     manifest.extend(struct.pack("<H", len(permissions)))

@@ -12,6 +12,9 @@ add_library(flint_platform STATIC
     src/resources.cpp
     src/lua_app.cpp
     src/runtime.cpp
+    src/sensors.cpp
+    src/core_hardware.cpp
+    src/core_sensors.cpp
     src/core.cpp
     src/core_ui.cpp
     src/core_touch.cpp
@@ -109,9 +112,10 @@ include(CMakePackageConfigHelpers)
 install(TARGETS flint_platform EXPORT FlintPlatformTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    PATTERN "registry.h" EXCLUDE PATTERN "services.h" EXCLUDE)
+    PATTERN "registry.h" EXCLUDE PATTERN "services.h" EXCLUDE PATTERN "sensor_registry.h" EXCLUDE)
 install(FILES "${FLINT_GENERATED_INCLUDE_DIR}/flint/registry.h"
     "${FLINT_GENERATED_INCLUDE_DIR}/flint/services.h"
+    "${FLINT_GENERATED_INCLUDE_DIR}/flint/sensor_registry.h"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/flint)
 install(EXPORT FlintPlatformTargets NAMESPACE Flint::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/FlintPlatform)
@@ -208,4 +212,25 @@ if(FLINT_PLATFORM_TESTS)
     get_property(_flint_tests DIRECTORY PROPERTY TESTS)
     set_tests_properties(${_flint_tests} PROPERTIES ENVIRONMENT
         "FLINT_FACTORY_DIR=${FLINT_FACTORY_DIR};FLINT_EXAMPLES_DIR=${FLINT_EXAMPLES_DIR};PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
+endif()
+
+if(FLINT_PLATFORM_TESTS)
+    add_executable(sensor_tests tests/sensors.cpp)
+    target_link_libraries(sensor_tests PRIVATE flint_platform)
+    add_test(NAME sensor_broker COMMAND sensor_tests)
+endif()
+if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(sensor_core_tests tests/sensor_core.cpp)
+    target_link_libraries(sensor_core_tests PRIVATE flint_platform)
+    add_test(NAME sensor_core COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sensor_core.py $<TARGET_FILE:sensor_core_tests>)
+    set_tests_properties(sensor_core PROPERTIES TIMEOUT 30 ENVIRONMENT
+        "FLINT_FACTORY_DIR=${FLINT_FACTORY_DIR};PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
+endif()
+if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS AND FLINT_ENABLE_LUA)
+    add_test(NAME sensor_tooling COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sensor_tooling.py
+        $<TARGET_FILE:ignite-run> $<TARGET_FILE:ignite-check>)
+    set_tests_properties(sensor_tooling PROPERTIES TIMEOUT 30 ENVIRONMENT
+        "PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
 endif()

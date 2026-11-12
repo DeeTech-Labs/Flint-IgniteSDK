@@ -1,6 +1,7 @@
 """Small USB Companion client for explicit development/device validation commands."""
 import hashlib
 import json
+import math
 import struct
 import time
 import zlib
@@ -135,3 +136,65 @@ class Companion:
         return Reader(self.request("install_commit", timeout=45)).text()
     def launch(self, ident, component="main"):
         self.request("launch",text(ident)+text(component))
+    def sensor_catalog(self):
+        r = Reader(self.request("sensor_catalog"))
+        count = r.number(1)
+        if count > 16: raise ValueError("too many sensor sources")
+        result, ids = [], set()
+        for _ in range(count):
+            source = {"source_id": r.number(2), "channels": r.number(1),
+                "min_interval_ms": r.number(), "default_interval_ms": r.number(),
+                "max_interval_ms": r.number(), "stale_after_ms": r.number(),
+                "priority": r.number(1), "simulation": r.number(1),
+                "temperature_kind": r.number(1), "coordinates": r.number(1),
+                "status": r.number(1), "reason": r.number(2), "generation": r.number(8),
+                "sample_id": r.number(8), "timestamp_ms": r.number(8), "age_ms": r.number(8)}
+            if (not source["source_id"] or source["source_id"] in ids or not 1 <= source["channels"] <= 63
+                    or not 1 <= source["min_interval_ms"] <= source["default_interval_ms"] <= source["max_interval_ms"]
+                    or not source["stale_after_ms"] or source["simulation"] > 1
+                    or source["temperature_kind"] > 2 or source["coordinates"] > 1
+                    or source["status"] > 5 or source["reason"] > 16):
+                raise ValueError("invalid sensor catalog")
+            ids.add(source["source_id"])
+            source["simulation"] = bool(source["simulation"])
+            result.append(source)
+        if r.offset != len(r.data): raise ValueError("trailing sensor catalog")
+        return result
+    def sensor_diagnostic_start(self, source, channels, interval_ms=1000, lease_ms=5000):
+        for value, low, high in ((source, 1, 65535), (channels, 1, 63),
+                (interval_ms, 200, 0xffffffff), (lease_ms, 1, 30000)):
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError("invalid sensor diagnostic lease")
+        response = self.request("sensor_diagnostic", struct.pack("<BHBII", 1, source, channels, interval_ms, lease_ms))
+        if response: raise ValueError("trailing diagnostic start response")
+    def sensor_diagnostic_stop(self):
+        if self.request("sensor_diagnostic", b"\0"):
+            raise ValueError("trailing diagnostic stop response")
+    def sensor_diagnostic_read(self):
+        r = Reader(self.request("sensor_diagnostic", b"\2"))
+        result = {"source_id": r.number(2), "channels": r.number(1),
+            "generation": r.number(8), "sample_id": r.number(8), "timestamp_ms": r.number(8),
+            "age_ms": r.number(8), "status": r.number(1), "reason": r.number(2),
+            "drops": r.number(), "simulation": r.number(1), "values": {}}
+        if (not result["source_id"] or result["channels"] > 63 or result["status"] > 5
+                or result["reason"] > 16 or result["simulation"] > 1
+                or (result["status"] != 2 and result["channels"])
+                or (result["status"] == 2 and result["reason"])):
+            raise ValueError("invalid sensor diagnostic snapshot")
+        names = ("temperature", "pressure", "humidity", "ambient_light", "acceleration", "angular_velocity")
+        for index, name in enumerate(names):
+            if not result["channels"] & (1 << index): continue
+            if r.offset + 24 > len(r.data): raise ValueError("truncated sensor values")
+            xyz = struct.unpack_from("<ddd", r.data, r.offset); r.offset += 24
+            if any(not math.isfinite(v) for v in xyz): raise ValueError("non-finite sensor value")
+            if index < 4 and (xyz[1] or xyz[2]): raise ValueError("invalid scalar components")
+            result["values"][name] = dict(zip(("x", "y", "z"), xyz))
+        if r.offset != len(r.data): raise ValueError("trailing sensor values")
+        result["simulation"] = bool(result["simulation"])
+        return result
+    def time_status(self):
+        r = Reader(self.request("time_status"))
+        result = {"epoch": r.number(8), "state": r.number(1), "error": r.number(2)}
+        if r.offset != len(r.data) or result["state"] > 3 or result["error"] > 16:
+            raise ValueError("invalid time status")
+        return result

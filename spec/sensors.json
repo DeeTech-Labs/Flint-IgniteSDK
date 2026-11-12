@@ -1,0 +1,41 @@
+{
+    "version": 1,
+    "channels": [
+        {
+            "id": 0,
+            "name": "temperature",
+            "unit": "celsius",
+            "permission": "sensors.temperature"
+        },
+        {
+            "id": 1,
+            "name": "pressure",
+            "unit": "pascal",
+            "permission": "sensors.pressure"
+        },
+        {
+            "id": 2,
+            "name": "humidity",
+            "unit": "percent",
+            "permission": "sensors.humidity"
+        },
+        {
+            "id": 3,
+            "name": "ambient_light",
+            "unit": "lux",
+            "permission": "sensors.ambient_light"
+        },
+        {
+            "id": 4,
+            "name": "acceleration",
+            "unit": "m/s2",
+            "permission": "sensors.motion"
+        },
+        {
+            "id": 5,
+            "name": "angular_velocity",
+            "unit": "rad/s",
+            "permission": "sensors.motion"
+        }
+    ]
+}

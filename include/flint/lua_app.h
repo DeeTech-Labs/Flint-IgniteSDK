@@ -32,6 +32,7 @@ public:
         FlintRender::Scene &scene, AppHost host = {});
     Error update(uint32_t elapsedMs, bool pressed);
     Error event(std::string_view kind, int32_t value, const InputEvent *input = nullptr);
+    Error sensorEvent(const sensors::Event &event);
     Error tick(uint64_t now);
     uint64_t nextWake() const;
     bool visible(unsigned index) const;

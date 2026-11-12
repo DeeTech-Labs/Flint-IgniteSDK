@@ -24,7 +24,9 @@ Error loadManifest(Package &package, Manifest &out) {
     m.budget = {uint32_t(r.n()), uint32_t(r.n()), uint32_t(r.n())};
     m.capabilities = r.n(8);
     if (!identifier(m.id) || !identifier(m.publisher) || m.name.empty() || !appText(m.name) ||
-        std::any_of(m.name.begin(), m.name.end(), [](unsigned char c) { return c < 32 || c == 127; }) || !m.version)
+        std::any_of(
+            m.name.begin(), m.name.end(), [](unsigned char c) { return c < 32 || c == 127; }) ||
+        !m.version)
         return Error::invalid_package;
     const auto count = r.n(2);
     if (count > 64)
@@ -62,7 +64,8 @@ Error loadManifest(Package &package, Manifest &out) {
     if (!m.icons.main && (m.icons.mask || m.icons.light || m.icons.dark))
         return Error::invalid_package;
     for (const auto id : {m.icons.main, m.icons.mask, m.icons.light, m.icons.dark}) {
-        if (!id) continue;
+        if (!id)
+            continue;
         Package::View section;
         if (package.view(id, section) != Error::ok || section.info().type != Section::resource)
             return Error::invalid_package;
@@ -84,6 +87,9 @@ Error ApplicationValidation::begin(
         return fail(error);
     if ((m.capabilities & caps) != m.capabilities)
         return fail(Error::not_supported);
+    if ((m.capabilities & sensors::Capability) &&
+        (m.capabilities & (CapLua | CapAppApi)) != (CapLua | CapAppApi))
+        return fail(Error::invalid_package);
     bool hasUi = false;
     for (const auto &component : m.components) {
         hasUi = hasUi || component.type == Component::app ||

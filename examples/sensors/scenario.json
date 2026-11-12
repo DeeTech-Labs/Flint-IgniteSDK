@@ -1,0 +1,35 @@
+{
+    "steps": [
+        {
+            "op": "permission",
+            "permission": "sensors.temperature",
+            "enabled": true
+        },
+        {
+            "op": "advance",
+            "ms": 1000
+        },
+        {
+            "op": "advance",
+            "ms": 1000
+        },
+        {
+            "op": "expect_text",
+            "text": "temperature=23.5"
+        },
+        {
+            "op": "permission",
+            "permission": "sensors.temperature",
+            "enabled": false
+        },
+        {
+            "op": "input",
+            "kind": "press",
+            "value": 1
+        },
+        {
+            "op": "expect_text",
+            "text": "error=5"
+        }
+    ]
+}

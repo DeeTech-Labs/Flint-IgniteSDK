@@ -1,6 +1,6 @@
 #pragma once
 // Generated from spec/permissions.json; do not edit.
-#include "permissions.h"
+#include <flint/permissions.h>
 
 namespace flint {
 inline constexpr Permission PermissionRegistry[]{
@@ -27,7 +27,6 @@ inline constexpr Permission PermissionRegistry[]{
     Permission{"storage.settings", Access::automatic, 0},
     Permission{"haptics.feedback", Access::automatic, 0},
     Permission{"audio.play", Access::automatic, 0},
-    Permission{"sensors.ambient_light", Access::automatic, 0},
     Permission{"network.status", Access::automatic, 0},
     Permission{"bluetooth.status", Access::automatic, 0},
     Permission{"companion.pc.status", Access::automatic, 0},
@@ -53,6 +52,10 @@ inline constexpr Permission PermissionRegistry[]{
     Permission{"haptics.background", Access::persistent, 0},
     Permission{"audio.background", Access::persistent, 0},
     Permission{"sensors.motion", Access::persistent, 0},
+    Permission{"sensors.ambient_light", Access::persistent, 0},
+    Permission{"sensors.temperature", Access::persistent, 0},
+    Permission{"sensors.pressure", Access::persistent, 0},
+    Permission{"sensors.humidity", Access::persistent, 0},
     Permission{"sensors.steps", Access::persistent, 0},
     Permission{"sensors.heart_rate", Access::persistent, 0},
     Permission{"sensors.spo2", Access::persistent, 0},

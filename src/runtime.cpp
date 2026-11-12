@@ -177,7 +177,18 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
                 const auto &host = static_cast<Runtime *>(context)->host_;
                 return host.monotonic ? host.monotonic(host.context) : uint64_t(0);
             },
-            bool(manifest_.capabilities & CapAppApi)};
+            bool(manifest_.capabilities & CapAppApi), nullptr,
+            [](void *context, const sensors::Request &request, sensors::Reply &reply) {
+                return static_cast<Runtime *>(context)->sensorCall(request, reply);
+            }};
+        if (!(manifest_.capabilities & sensors::Capability))
+            bridge.sensor = nullptr;
+        for (const auto &declaration : manifest_.permissions) {
+            if (declaration.permission == "audio.play")
+                bridge.outputs |= 1;
+            if (declaration.permission == "ui.brightness")
+                bridge.outputs |= 2;
+        }
         if (error == Error::ok)
             error = lua_.load({reinterpret_cast<const char *>(source.data()), source.size()},
                 uint32_t(luaLimit), manifest_.budget.instructions, template_, bridge);
@@ -213,6 +224,8 @@ Error Runtime::update(uint32_t elapsedMs, bool pressed) {
     return error;
 }
 Error Runtime::stop() {
+    if (host_.cancelSensors)
+        host_.cancelSensors(host_.context);
     lua_.stop();
     nativeHeap_ = nativePeak_ = 0;
     inputHead_ = inputSize_ = 0;
@@ -241,6 +254,8 @@ Error Runtime::stop() {
 Error Runtime::suspend() {
     if (lifecycle_.state != State::active)
         return Error::invalid_state;
+    if (host_.cancelSensors)
+        host_.cancelSensors(host_.context);
     if (lua_.active() && (manifest_.capabilities & CapAppApi)) {
         const auto error = lua_.event("suspend", 0);
         pendingVisual_ |= lua_.visualChanged();
@@ -250,6 +265,8 @@ Error Runtime::suspend() {
         }
     }
     inputHead_ = inputSize_ = 0;
+    if (host_.cancelSensors)
+        host_.cancelSensors(host_.context);
     lifecycle_.dispatch(Lifecycle::deactivate);
     ++consumerGeneration_;
     return lifecycle_.dispatch(Lifecycle::suspend);
@@ -370,13 +387,15 @@ Error Runtime::render(const Values &values, FlintRender::Scene &output) {
 }
 Error Runtime::appCall(
     AppService service, std::string_view key, std::string_view value, AppReply &reply) {
+    if (loading_ && (service == AppService::beep || service == AppService::brightness))
+        return Error::invalid_state;
     if (!loading_ && state() != State::active)
         return Error::invalid_state;
     if (!(manifest_.capabilities & CapAppApi) || !(capabilities_ & CapAppApi))
         return Error::not_supported;
     const auto required = servicePermission(service);
     const auto *spec = permission(required);
-    if (!spec || spec->access != Access::automatic)
+    if (!spec)
         return Error::not_supported;
     bool declared = false;
     for (const auto &d : manifest_.permissions)
@@ -386,6 +405,13 @@ Error Runtime::appCall(
         return Error::permission_denied;
     if ((capabilities_ & spec->capability) != spec->capability)
         return Error::not_supported;
+    if (spec->access != Access::automatic) {
+        if (loading_ || !host_.authorize)
+            return Error::permission_denied;
+        const auto error = host_.authorize(host_.context, required);
+        if (error != Error::ok)
+            return error;
+    }
     if (service == AppService::timer)
         return Error::ok;
     if (service == AppService::packages &&
@@ -432,6 +458,17 @@ Error Runtime::appCall(
             (!reply.numeric && !appText({reply.text.data(), reply.size}))))
         return Error::invalid_argument;
     return error;
+}
+Error Runtime::sensorCall(const sensors::Request &request, sensors::Reply &reply) {
+    // Loading includes package validation and the first update callback. No hardware intent
+    // or sensor cache access is permitted until the installed Runtime is active.
+    if (loading_ || state() != State::active)
+        return Error::invalid_state;
+    if (!(manifest_.capabilities & sensors::Capability) || !(capabilities_ & sensors::Capability))
+        return Error::not_supported;
+    if (!host_.sensor)
+        return Error::not_supported;
+    return host_.sensor(host_.context, request, reply);
 }
 Error Runtime::postInput(InputEvent event) {
     if (event.generation != generation_)
@@ -499,6 +536,20 @@ Error Runtime::tick(uint64_t now) {
         if (error != Error::ok) {
             stop();
             return error;
+        }
+        changed |= lua_.visualChanged();
+    }
+    // Input, including touch_cancel, precedes sensor callbacks. Pull one coalesced event
+    // at a time so unsubscribe in a callback invalidates later deliveries in this tick.
+    for (size_t i = 0; host_.sensorEvent && i < sensors::MaxSubscriptions + sensors::MaxRefresh;
+        ++i) {
+        sensors::Event event;
+        if (!host_.sensorEvent(host_.context, event))
+            break;
+        const auto sensorError = lua_.sensorEvent(event);
+        if (sensorError != Error::ok) {
+            stop();
+            return sensorError;
         }
         changed |= lua_.visualChanged();
     }
