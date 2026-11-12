@@ -35,13 +35,13 @@
 
 ```sh
 python3 -m pip install Pillow
-python3 tools/generate_registry.py
-python3 tools/build_system.py
-cmake -S . -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/flint-platform
-ctest --test-dir /tmp/flint-platform --output-on-failure
+cmake -S . -B build/debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure
 python3 tools/compile_ignite.py examples/pc-monitor/project.json /tmp/pc-monitor.ignit
 ```
+
+CMake создаёт реестры, системные пакеты и примеры в каталоге сборки; исходники не переписываются. Прямые генераторы по умолчанию используют `build/generated/`.
 
 Подробные команды установки, API Lua и подключение SDK — в [руководстве разработчика](docs/ru/SDK.md).
 

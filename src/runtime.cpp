@@ -87,6 +87,12 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
     }
     for (int index = 0; index < scene.count; ++index) {
         const auto &operation = scene.ops[index];
+        if (operation.kind == FlintRender::CatalogIcon) {
+            const bool declared = std::any_of(m.permissions.begin(), m.permissions.end(),
+                [](const auto &d) { return d.permission == "packages.list" && d.scope.empty(); });
+            if (!declared || !(caps & CapInteractiveUi) || !(m.capabilities & CapInteractiveUi))
+                return Error::permission_denied;
+        }
         if ((operation.kind == FlintRender::Text && operation.font >= 4) ||
             operation.kind == FlintRender::ResourceImage) {
             if (!ownResources) {
@@ -382,6 +388,15 @@ Error Runtime::appCall(
         return Error::not_supported;
     if (service == AppService::timer)
         return Error::ok;
+    if (service == AppService::packages &&
+        (!(capabilities_ & CapInteractiveUi) || !(manifest_.capabilities & CapInteractiveUi)))
+        return Error::not_supported;
+    if (service == AppService::navigate || service == AppService::system_action) {
+        if (!(capabilities_ & CapInteractiveUi) || !(manifest_.capabilities & CapInteractiveUi))
+            return Error::not_supported;
+        if (!inputDispatch_ || loading_ || !focused_)
+            return Error::user_interaction_required;
+    }
     if (service == AppService::image) {
         uint32_t id{};
         const auto parsed = std::from_chars(key.data(), key.data() + key.size(), id);
@@ -392,17 +407,20 @@ Error Runtime::appCall(
         auto error = resources_.find(id, entry);
         if (error != Error::ok || entry.type != Section::resource || entry.size < 8)
             return Error::invalid_argument;
-        std::array<uint8_t, 8> header{};
-        error = resources_.read(resources_.handle(id), 0, header);
-        if (error != Error::ok)
+        Package::View section;
+        if (package_.view(id, section) != Error::ok)
+            return Error::invalid_argument;
+        auto &decoder = resources_.decoder();
+        error = decoder.open(imageSource(section));
+        if (error == Error::ok)
+            error = decoder.validate();
+        if (error != Error::ok) {
+            decoder.close();
             return error;
-        Reader reader{header};
-        if (reader.n() != 0x4d494c46)
-            return Error::invalid_argument;
-        const auto w = reader.n(2), h = reader.n(2);
-        if (!w || !h || w > 320 || h > 320 || entry.size != 8 + w * h * 2)
-            return Error::invalid_argument;
-        reply.number = int64_t((w << 16) | h);
+        }
+        const auto &info = decoder.info();
+        reply.number = int64_t((uint32_t(info.width) << 16) | info.height);
+        decoder.close();
         reply.numeric = true;
         return Error::ok;
     }
@@ -422,6 +440,20 @@ Error Runtime::postInput(InputEvent event) {
         return Error::invalid_state;
     if (inputName(event.kind).empty())
         return Error::invalid_argument;
+    if (event.kind >= InputKind::touch_down && event.kind <= InputKind::touch_cancel) {
+        if (!(capabilities_ & CapTouchEvents) || !(manifest_.capabilities & CapTouchEvents))
+            return Error::not_supported;
+        if (event.x < -320 || event.x > 640 || event.y < -320 || event.y > 640 ||
+            event.pointer > 15 || event.at > uint64_t(INT64_MAX))
+            return Error::invalid_argument;
+        if (event.kind == InputKind::touch_move && inputSize_) {
+            auto &last = inputs_[(inputHead_ + inputSize_ - 1) % inputs_.size()];
+            if (last.kind == InputKind::touch_move && last.pointer == event.pointer) {
+                last = event;
+                return Error::ok;
+            }
+        }
+    }
     bool declared = false;
     for (const auto &d : manifest_.permissions)
         if (d.permission == "input.focused" && d.scope.empty())
@@ -456,9 +488,11 @@ Error Runtime::tick(uint64_t now) {
         else if (!focused_)
             continue;
         Error error;
-        if (manifest_.capabilities & CapAppApi)
-            error = lua_.event(inputName(input.kind), input.value);
-        else if (input.kind == InputKind::press)
+        if (manifest_.capabilities & CapAppApi) {
+            inputDispatch_ = input.kind == InputKind::touch_up || input.kind == InputKind::release;
+            error = lua_.event(inputName(input.kind), input.value, &input);
+            inputDispatch_ = false;
+        } else if (input.kind == InputKind::press)
             error = lua_.update(0, true);
         else
             continue;

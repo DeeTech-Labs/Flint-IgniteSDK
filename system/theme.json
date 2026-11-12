@@ -2,7 +2,7 @@
     "id": "system.theme",
     "name": "FlinT Midnight",
     "publisher": "deetech",
-    "version": 1,
+    "version": 3,
     "permissions": [],
     "components": [
         {
@@ -10,9 +10,14 @@
             "type": "theme",
             "role": "theme",
             "values": {
-                "background": "0842",
-                "text": "ef7d",
-                "accent": "67f0"
+                "background": "1082",
+                "text": "f7bf",
+                "accent": "8f3d",
+                "appearance": "dark",
+                "icons": "normal",
+                "surface": "2105",
+                "pressed": "39e9",
+                "muted": "a536"
             }
         }
     ]

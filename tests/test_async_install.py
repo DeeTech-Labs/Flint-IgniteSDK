@@ -1,3 +1,4 @@
+from generated_paths import FACTORY_DIR, EXAMPLES_DIR
 import json
 import struct
 import subprocess
@@ -12,7 +13,7 @@ from compile_ignite import compile_project
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
-    counter = ROOT / "examples/counter/sample.ignit"
+    counter = EXAMPLES_DIR / "counter/sample.ignit"
     project = json.loads((ROOT / "examples/pc-monitor/project.json").read_text(encoding="utf-8"))
     project["id"] = "test.bulk"
     data = compile_project(project, ROOT / "examples/pc-monitor")
@@ -30,5 +31,5 @@ with tempfile.TemporaryDirectory() as directory:
     updated["version"] = 2
     counter_update = root / "counter-update.ignit"
     counter_update.write_bytes(padded(compile_project(updated, ROOT / "examples/counter")))
-    subprocess.run([sys.argv[1], str(root / "store"), str(ROOT / "factory"),
+    subprocess.run([sys.argv[1], str(root / "store"), str(FACTORY_DIR),
                     str(counter), str(bulk), str(counter_update)], check=True, timeout=30)

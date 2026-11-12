@@ -14,7 +14,7 @@ Error loadManifest(Package &package, Manifest &out) {
     if (package.read(manifestEntry, 0, bytes) != Error::ok)
         return Error::io_error;
     Reader r{bytes};
-    if (r.n() != 0x314d4c46)
+    if (r.n() != 0x324d4c46)
         return Error::invalid_package;
     Manifest m;
     m.id = r.text(64);
@@ -23,7 +23,8 @@ Error loadManifest(Package &package, Manifest &out) {
     m.version = r.n();
     m.budget = {uint32_t(r.n()), uint32_t(r.n()), uint32_t(r.n())};
     m.capabilities = r.n(8);
-    if (!identifier(m.id) || !identifier(m.publisher) || m.name.empty() || !m.version)
+    if (!identifier(m.id) || !identifier(m.publisher) || m.name.empty() || !appText(m.name) ||
+        std::any_of(m.name.begin(), m.name.end(), [](unsigned char c) { return c < 32 || c == 127; }) || !m.version)
         return Error::invalid_package;
     const auto count = r.n(2);
     if (count > 64)
@@ -56,6 +57,15 @@ Error loadManifest(Package &package, Manifest &out) {
             section.info().type == Section::manifest || section.info().type == Section::signature)
             return Error::invalid_package;
         m.components.push_back(std::move(c));
+    }
+    m.icons = {uint32_t(r.n()), uint32_t(r.n()), uint32_t(r.n()), uint32_t(r.n())};
+    if (!m.icons.main && (m.icons.mask || m.icons.light || m.icons.dark))
+        return Error::invalid_package;
+    for (const auto id : {m.icons.main, m.icons.mask, m.icons.light, m.icons.dark}) {
+        if (!id) continue;
+        Package::View section;
+        if (package.view(id, section) != Error::ok || section.info().type != Section::resource)
+            return Error::invalid_package;
     }
     if (!r.done())
         return Error::invalid_package;

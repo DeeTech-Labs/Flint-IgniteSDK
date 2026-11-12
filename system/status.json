@@ -1,0 +1,166 @@
+{
+    "id": "system.status",
+    "name": "System status",
+    "publisher": "deetech",
+    "version": 2,
+    "permissions": [
+        "ui.render",
+        "system.locale.read"
+    ],
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "x": 0,
+                    "y": 0,
+                    "w": 280,
+                    "h": 240,
+                    "color": "theme.background"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 12,
+                    "y": 10,
+                    "w": 256,
+                    "h": 174,
+                    "color": "theme.surface",
+                    "extra": 24
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 43,
+                    "text": "${status.title}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 109,
+                    "text": "${status.subject}",
+                    "color": "theme.text",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 146,
+                    "text": "${status.detail}",
+                    "color": "theme.text",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 175,
+                    "text": "${status.scope}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "rounded",
+                    "x": 12,
+                    "y": 192,
+                    "w": 256,
+                    "h": 44,
+                    "color": "theme.accent",
+                    "extra": 18
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 221,
+                    "text": "${status.button}",
+                    "color": "theme.background",
+                    "font": 0,
+                    "center": true
+                }
+            ]
+        },
+        {
+            "id": "pairing",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "x": 0,
+                    "y": 0,
+                    "w": 280,
+                    "h": 240,
+                    "color": "theme.background"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 12,
+                    "y": 10,
+                    "w": 256,
+                    "h": 174,
+                    "color": "theme.surface",
+                    "extra": 24
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 43,
+                    "text": "${status.title}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 109,
+                    "text": "${status.subject}",
+                    "color": "theme.text",
+                    "font": 2,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 146,
+                    "text": "${status.detail}",
+                    "color": "theme.text",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 175,
+                    "text": "${status.scope}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "rounded",
+                    "x": 12,
+                    "y": 192,
+                    "w": 256,
+                    "h": 44,
+                    "color": "theme.accent",
+                    "extra": 18
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 221,
+                    "text": "${status.button}",
+                    "color": "theme.background",
+                    "font": 0,
+                    "center": true
+                }
+            ]
+        }
+    ]
+}

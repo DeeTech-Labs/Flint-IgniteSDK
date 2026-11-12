@@ -63,9 +63,49 @@ int main(int argc, char **argv) {
     };
     platform.free_storage = [] { return uint64_t(2 * 1024 * 1024); };
     platform.capabilities |= CapResources;
+    {
+        auto startupPlatform = platform;
+        startupPlatform.power_on = true;
+        Core startup(root + "/startup", root + "/factory", startupPlatform);
+        CHECK(startup.begin() == Error::ok);
+        CHECK(startup.runtime().manifest().id == "system.boot");
+        // Initialization time does not consume the presentation interval.
+        tick += 5000;
+        startup.tick();
+        CHECK(startup.runtime().manifest().id == "system.boot");
+        FlintRender::Scene splash;
+        CHECK(startup.scene(splash) == Error::ok);
+        CHECK(startup.nextWake() <= tick + 33); // Animation frames precede the handoff deadline.
+        tick += 699;
+        startup.tick();
+        CHECK(startup.runtime().manifest().id == "system.boot");
+        ++tick;
+        CHECK(startup.tick());
+        CHECK(startup.runtime().manifest().id == "system.clock");
+        CHECK(startup.scene(splash) == Error::ok);
+        CHECK(startup.lastLogicError() == Error::ok);
+
+        Core interrupted(root + "/interrupted", root + "/factory", startupPlatform);
+        CHECK(interrupted.begin() == Error::ok);
+        CHECK(interrupted.scene(splash) == Error::ok);
+        CHECK(interrupted.launch("system.settings", "main") == Error::ok);
+        tick += 1000;
+        interrupted.tick();
+        CHECK(interrupted.runtime().manifest().id == "system.settings");
+
+        // A missing optional splash must not block the selected clock or recovery.
+        std::filesystem::copy(
+            root + "/factory", root + "/without-boot", std::filesystem::copy_options::recursive);
+        std::filesystem::remove(root + "/without-boot/boot.ignit");
+        Core missing(root + "/missing", root + "/without-boot", startupPlatform);
+        CHECK(missing.begin() == Error::ok);
+        CHECK(missing.runtime().manifest().id == "system.clock");
+        tick = 1000;
+    }
     Core core(root + "/store", root + "/factory", platform);
     CHECK(core.begin() == Error::ok);
-    CHECK(core.packages().list().size() == 6);
+    CHECK(core.runtime().manifest().id == "system.clock");
+    CHECK(core.packages().list().size() == 9);
     Session session{true, false, 7};
     uint32_t sequence = 0;
     auto request = [&](Method method, Bytes data = Bytes{}, Bytes *result = nullptr) {
@@ -140,13 +180,13 @@ int main(int argc, char **argv) {
     CHECK(chunk(v1, 101, 10) == Error::invalid_argument);
     CHECK(chunk(v1, 100, v1.size() - 100) == Error::ok);
     CHECK(request(Method::install_commit) == Error::ok);
-    CHECK(core.packages().list().size() == 7);
+    CHECK(core.packages().list().size() == 10);
     lowMemory = true;
     CHECK(core.launch("test.monitor", "main") == Error::resource_exhausted);
     CHECK(core.runtime().manifest().id == "system.clock");
-    CHECK(core.packages().list().size() == 7);
+    CHECK(core.packages().list().size() == 10);
     CHECK(core.packages().begin() == Error::ok);
-    CHECK(core.packages().list().size() == 7);
+    CHECK(core.packages().list().size() == 10);
     lowMemory = false;
     CHECK(core.launch("test.monitor", "main") == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
@@ -280,7 +320,7 @@ int main(int argc, char **argv) {
     CHECK(text(scene).find("CPU") == std::string::npos);
     CHECK(install(root + "/spoof.ignit") == Error::permission_denied);
     CHECK(core.packages().locate("system.clock", current) == Error::ok);
-    CHECK(current.factory && current.manifest.version == 1);
+    CHECK(current.factory && current.manifest.version == 3);
     // Simulate power-loss/corruption with a valid previous reference and orphaned temporary files.
     core.runtime().stop();
     CHECK(core.packages().locate("test.monitor", current) == Error::ok);
@@ -326,10 +366,11 @@ int main(int argc, char **argv) {
     remove.text("test.monitor");
     CHECK(core.launch("system.launcher", "main") == Error::ok);
     CHECK(core.scene(scene) == Error::ok);
-    CHECK(text(scene).find("PC Monitor") != std::string::npos);
+    CHECK(text(scene).find("PC Mon") != std::string::npos);
     CHECK(request(Method::remove, remove.data) == Error::ok);
+    core.tick(); // Deliver catalogue invalidation to the reactive Launcher.
     CHECK(core.scene(scene) == Error::ok);
-    CHECK(text(scene).find("PC Monitor") == std::string::npos);
+    CHECK(text(scene).find("PC Mon") == std::string::npos);
     CHECK(core.launch("system.clock", "main") == Error::ok);
     CHECK(core.runtime().manifest().id == "system.clock");
     CHECK(core.packages().locate("test.monitor", current) == Error::source_unavailable);

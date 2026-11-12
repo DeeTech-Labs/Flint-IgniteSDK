@@ -102,7 +102,7 @@ inline Bounds bounds(const Scene &s, const Op &op) {
     return {op.x, op.y, op.w, op.h};
 }
 inline Bounds dirty(const Scene &a, const Scene &b) {
-    if (a.width != b.width || a.height != b.height || a.count != b.count)
+    if (a.width != b.width || a.height != b.height || a.count != b.count || a.resourceRevision != b.resourceRevision)
         return {0, 0, b.width, b.height};
     Bounds result;
     bool any = false;
@@ -230,7 +230,7 @@ inline void render(const Scene &s, Canvas &canvas) {
                 if (s.data[op.offset + bit / 8] & (0x80 >> (bit % 8)))
                     canvas.fill(op.x + (bit % 16) * op.extra, op.y + (bit / 16) * op.extra,
                         op.extra, op.extra, op.color);
-        } else if (op.kind == ResourceImage) {
+        } else if (op.kind == ResourceImage || op.kind == CatalogIcon) {
             if (resourceImage)
                 resourceImage(resourceContext, canvas, op);
         } else

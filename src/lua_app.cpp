@@ -26,6 +26,7 @@ struct LuaApp::Impl {
     uint32_t hidden{};
     std::string_view pendingEvent;
     int32_t pendingValue{};
+    InputEvent pendingInput{};
     uint64_t clock{}, lastUpdate{}, nextUpdate{}, interval{33};
     struct Timer {
         uint64_t due{}, period{};
@@ -145,8 +146,16 @@ struct LuaApp::Impl {
             op.h = int16_t(reply.number & 65535);
             return status(state, Error::ok);
         }
+        if (app.host.enabled && property == "catalog" && op.kind == FlintRender::CatalogIcon) {
+            if (value < 0 || value >= UINT16_MAX)
+                return luaL_error(state, "catalog index out of range");
+            app.changed |= op.extra != value + 1;
+            op.extra = uint16_t(value + 1);
+            return 0;
+        }
         if (op.kind != FlintRender::Rect && op.kind != FlintRender::Rounded &&
-            op.kind != FlintRender::Text)
+            op.kind != FlintRender::Text && op.kind != FlintRender::CatalogIcon &&
+            op.kind != FlintRender::ResourceImage)
             return luaL_error(state, "node kind is immutable");
         if (property == "x" || property == "y") {
             if (value < -320 || value > 640)
@@ -154,7 +163,8 @@ struct LuaApp::Impl {
             auto &target = property == "x" ? op.x : op.y;
             app.changed |= target != value;
             target = int16_t(value);
-        } else if ((property == "w" || property == "h") && op.kind != FlintRender::Text) {
+        } else if ((property == "w" || property == "h") &&
+            (op.kind == FlintRender::Rect || op.kind == FlintRender::Rounded)) {
             if (value < 0 || value > 640)
                 return luaL_error(state, "size out of range");
             auto &target = property == "w" ? op.w : op.h;
@@ -225,6 +235,8 @@ struct LuaApp::Impl {
             service = AppService::theme;
         else if (name == "system.settings.read")
             service = AppService::settings;
+        else if (name == "packages.list")
+            service = AppService::packages;
         else {
             lua_pushnil(state);
             lua_pushinteger(state, uint16_t(Error::not_supported));
@@ -303,6 +315,39 @@ struct LuaApp::Impl {
     static int erase(lua_State *state) {
         return storage(state, AppService::storage_delete);
     }
+    static int catalog(lua_State *state) {
+        arguments(state, 1);
+        const auto index = integer(state, 1);
+        if (index < 0 || index > 1000000)
+            return luaL_error(state, "catalog index out of range");
+        char key[16];
+        const auto size = std::snprintf(key, sizeof(key), "row%u", unsigned(index));
+        AppReply reply;
+        auto error = call(state, AppService::packages, {key, size_t(size)}, {}, reply);
+        const std::string_view record(reply.text.data(), reply.size);
+        const auto middle = record.rfind('\n');
+        if (error == Error::ok && middle == std::string_view::npos)
+            error = Error::invalid_argument;
+        if (error != Error::ok) {
+            lua_pushnil(state);
+            lua_pushnil(state);
+        } else {
+            lua_pushlstring(state, record.data(), middle);
+            lua_pushlstring(state, record.data() + middle + 1, record.size() - middle - 1);
+        }
+        lua_pushinteger(state, unsigned(error));
+        return 3;
+    }
+    static int action(lua_State *state) {
+        arguments(state, 2);
+        const auto key = string(state, 1), value = string(state, 2);
+        if (key.size() > 32 || value.size() > 129 || !appText(key) || !appText(value))
+            return status(state, Error::invalid_argument);
+        AppReply reply;
+        return status(state,
+            call(state, key == "system" ? AppService::system_action : AppService::navigate, key,
+                value, reply));
+    }
     static int schedule(lua_State *state) {
         arguments(state, 1);
         const auto delay = integer(state, 1);
@@ -351,6 +396,10 @@ struct LuaApp::Impl {
         if (self(state).host.enabled) {
             lua_pushcfunction(state, read);
             lua_setfield(state, -2, "read");
+            lua_pushcfunction(state, action);
+            lua_setfield(state, -2, "action");
+            lua_pushcfunction(state, catalog);
+            lua_setfield(state, -2, "catalog");
             lua_pushcfunction(state, get);
             lua_setfield(state, -2, "storage_get");
             lua_pushcfunction(state, put);
@@ -377,7 +426,11 @@ struct LuaApp::Impl {
         const auto &app = self(state);
         lua_pushlstring(state, app.pendingEvent.data(), app.pendingEvent.size());
         lua_pushinteger(state, app.pendingValue);
-        lua_call(state, 2, 0);
+        lua_pushinteger(state, app.pendingInput.x);
+        lua_pushinteger(state, app.pendingInput.y);
+        lua_pushinteger(state, app.pendingInput.pointer);
+        lua_pushinteger(state, lua_Integer(app.pendingInput.at));
+        lua_call(state, 6, 0);
         return 0;
     }
     static int callUpdate(lua_State *state) {
@@ -541,7 +594,7 @@ Error LuaApp::finish(int status, std::string_view phase) {
     return Error::not_supported;
 #endif
 }
-Error LuaApp::event(std::string_view kind, int32_t value) {
+Error LuaApp::event(std::string_view kind, int32_t value, const InputEvent *input) {
 #ifdef FLINT_ENABLE_LUA
     if (!impl_)
         return Error::invalid_state;
@@ -555,12 +608,14 @@ Error LuaApp::event(std::string_view kind, int32_t value) {
     auto *state = app.state;
     app.pendingEvent = kind;
     app.pendingValue = value;
+    app.pendingInput = input ? *input : InputEvent{};
     lua_pushcfunction(state, Impl::callEvent);
     lua_pushvalue(state, 1);
     return finish(lua_pcall(state, 1, 0, 0), "event");
 #else
     (void)kind;
     (void)value;
+    (void)input;
     return Error::not_supported;
 #endif
 }

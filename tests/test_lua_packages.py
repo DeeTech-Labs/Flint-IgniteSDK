@@ -45,6 +45,12 @@ with tempfile.TemporaryDirectory() as directory:
     except ValueError: pass
     else: raise AssertionError("missing Lua capability accepted")
     project["capabilities"] = 65
+    for includes in (["../outside.lua"], "main.lua", ["main.lua"] * 9, [None]):
+        project["logic"]["includes"] = includes
+        try: compile_project(project, root)
+        except (ValueError, TypeError): pass
+        else: raise AssertionError("invalid Lua includes accepted")
+    project["logic"].pop("includes")
     project["logic"]["path"] = "../outside.lua"
     try: compile_project(project, root)
     except ValueError: pass

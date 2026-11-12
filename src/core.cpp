@@ -65,6 +65,92 @@ Error Core::appCall(
     // Runtime has checked the canonical declaration; this bridge never accepts app-supplied
     // identity.
     const auto &manifest = runtime_.manifest();
+    if (service == AppService::packages) {
+        if (key == "revision") {
+            reply.numeric = true;
+            reply.number = int64_t(packages_.revision());
+            return Error::ok;
+        }
+        const bool target = key.starts_with("target");
+        const bool row = key.starts_with("row");
+        const bool countOnly = key == "count";
+        const auto indexText = target ? key.substr(6) : row ? key.substr(3) : key;
+        uint32_t wanted{};
+        if (!countOnly) {
+            const auto parsed =
+                std::from_chars(indexText.data(), indexText.data() + indexText.size(), wanted);
+            if (parsed.ec != std::errc{} || parsed.ptr != indexText.data() + indexText.size())
+                return Error::invalid_argument;
+        }
+        uint32_t index = 0;
+        std::string result;
+        packages_.visit([&](const Installed &installed) {
+            for (const auto &component : installed.manifest.components) {
+                if (!launcherApp(installed, component))
+                    continue;
+                if (!countOnly && index == wanted) {
+                    result = target ? installed.manifest.id + "/" + component.id
+                                    : uiText(installed.manifest.name, 116);
+                    if (!target && installed.factory) {
+                        const auto label = locale_.find(component.role == Role::clock ? "clock"
+                                : component.role == Role::settings                    ? "settings"
+                                                                                      : "");
+                        if (label != locale_.end())
+                            result = label->second;
+                    }
+                    if (!target)
+                        result = uiText(std::move(result), 116);
+                    if (row) {
+                        const auto targetId = installed.manifest.id + "/" + component.id;
+                        const auto limit = MaxAppString - targetId.size() - 4;
+                        if (result.size() > limit) {
+                            auto end = limit;
+                            while (end && (uint8_t(result[end]) & 0xc0) == 0x80)
+                                --end;
+                            result.resize(end);
+                            result += "…";
+                        }
+                        result += "\n" + targetId;
+                    }
+                    return false;
+                }
+                ++index;
+            }
+            return true;
+        });
+        if (countOnly) {
+            reply.numeric = true;
+            reply.number = index;
+            return Error::ok;
+        }
+        return result.empty() ? Error::source_unavailable : reply.assign(result);
+    }
+    if (service == AppService::navigate || service == AppService::system_action) {
+        if (!pendingUiAction_.empty())
+            return Error::invalid_state;
+        if (service == AppService::system_action) {
+            Installed owner;
+            if (packages_.locate(manifest.id, owner) != Error::ok || !owner.factory ||
+                runtime_.component().role != Role::settings)
+                return Error::permission_denied;
+            if (value != "ble_toggle" && value != "offset_up" && value != "offset_down" &&
+                value != "language" && value != "motion")
+                return Error::invalid_argument;
+        } else if (key == "role") {
+            if (value != "clock" && value != "launcher" && value != "settings")
+                return Error::invalid_argument;
+        } else if (key == "launch") {
+            const auto slash = value.find('/');
+            if (slash == std::string_view::npos || !identifier(value.substr(0, slash)) ||
+                !identifier(value.substr(slash + 1)))
+                return Error::invalid_argument;
+        } else
+            return Error::invalid_argument;
+        pendingUiAction_ = key;
+        pendingUiValue_ = value;
+        pendingUiGeneration_ = runtime_.generation();
+        return Error::ok;
+    }
     if (service == AppService::storage_get || service == AppService::storage_set ||
         service == AppService::storage_delete) {
         const bool write = service != AppService::storage_get;
@@ -99,6 +185,25 @@ Error Core::appCall(
     }
     if (service == AppService::power)
         return platform_.power ? platform_.power(key, reply) : Error::not_supported;
+    if (service == AppService::settings && key == "utc_offset_minutes") {
+        const auto found = settings_.find("utc_offset");
+        if (found == settings_.end())
+            return Error::source_unavailable;
+        int offset{};
+        const auto parsed = std::from_chars(
+            found->second.data(), found->second.data() + found->second.size(), offset);
+        if (parsed.ec != std::errc{} || parsed.ptr != found->second.data() + found->second.size() ||
+            offset < -720 || offset > 840)
+            return Error::invalid_argument;
+        reply.numeric = true;
+        reply.number = offset;
+        return Error::ok;
+    }
+    if (service == AppService::settings && key == "ble_available") {
+        reply.numeric = true;
+        reply.number = (platform_.capabilities & CapBlePolicy) ? 1 : 0;
+        return Error::ok;
+    }
     const Values *values = service == AppService::locale ? &locale_
         : service == AppService::theme                   ? &theme_
         : service == AppService::settings                ? &settings_
@@ -110,9 +215,11 @@ Error Core::appCall(
 }
 uint64_t Core::nextWake() const {
     const auto at = platform_.monotonic();
-    if (install_ || !events_.empty())
+    if (install_ || operationDirty_ || (edge_ && edge_->dirty) || !events_.empty())
         return at;
-    auto next = std::min(runtime_.nextWake(), nextEpochSave_);
+    auto next = std::min({runtime_.nextWake(), nextEpochSave_, startupUntil_, operationUntil_});
+    if (edge_ && edge_->settling)
+        next = std::min(next, edge_->nextFrame);
     if (boundProvider_ && boundAt_ <= UINT64_MAX - CompanionTtlMs)
         next = std::min(next, boundAt_ + CompanionTtlMs);
     if (epoch_ && at >= base_) {
@@ -199,6 +306,8 @@ Error Core::begin() {
     if (!settings_.contains("utc_offset")) {
         settings_["utc_offset"] = "180";
     }
+    if (!settings_.contains("reduce_motion"))
+        settings_["reduce_motion"] = "0";
     if ((platform_.capabilities & CapBlePolicy) && platform_.ble_check && platform_.ble_apply) {
         if (settings_["ble_enabled"] != "0")
             settings_["ble_enabled"] = "1";
@@ -239,6 +348,18 @@ Error Core::begin() {
     }
     activateRole(Role::theme);
     activateRole(Role::locale);
+    if (platform_.power_on) {
+        // A splash must not mask the absence of a usable clock during initial recovery checks.
+        error = activateRole(Role::clock);
+        if (error != Error::ok)
+            return error;
+        Installed boot;
+        if (packages_.locate("system.boot", boot) == Error::ok && boot.factory &&
+            runtime_.launch(boot, "main", platform_.memory, platform_.capabilities) == Error::ok) {
+            startupGeneration_ = runtime_.generation();
+            return Error::ok;
+        }
+    }
     return activateRole(Role::clock);
 }
 uint64_t Core::now() const {
@@ -314,8 +435,14 @@ Error Core::launch(std::string_view id, std::string_view component) {
             }
             activateRole(Role::clock);
         }
+        notice("app_error", std::string(id), "error_" + std::to_string(unsigned(result)));
     }
     if (result == Error::ok) {
+        if (notice_ && noticeKey_ != "pairing") {
+            presentation_.reset();
+            operationUntil_ = UINT64_MAX;
+            operationDirty_ = true;
+        }
         companion_.valid = false;
         events_.post({3, 0, runtime_.generation()});
     }
@@ -541,6 +668,27 @@ bool Core::tick() {
     refreshCompanionDemand();
     const auto at = platform_.monotonic();
     bool logicDirty = false;
+    if (runtime_.scripted() && notifiedCatalog_ != packages_.revision()) {
+        for (const auto &permission : runtime_.manifest().permissions)
+            if (permission.permission == "packages.list") {
+                if (runtime_.postInput({InputKind::catalog_changed, 0, runtime_.generation()}) ==
+                    Error::ok)
+                    notifiedCatalog_ = packages_.revision();
+                break;
+            }
+    }
+    if (startupGeneration_) {
+        if (runtime_.generation() != startupGeneration_) {
+            // An explicit launch/role selection must never be overridden by the splash.
+            startupGeneration_ = 0;
+            startupUntil_ = UINT64_MAX;
+        } else if (at >= startupUntil_) {
+            startupGeneration_ = 0;
+            startupUntil_ = UINT64_MAX;
+            lastLogicError_ = activateRole(Role::clock);
+            logicDirty = true;
+        }
+    }
     if (runtime_.scripted() && runtime_.state() == State::active && runtime_.nextWake() <= at) {
         // Failure is handled by the same factory recovery path as render errors.
         const auto selected = settings_.find("role1");
@@ -570,8 +718,13 @@ bool Core::tick() {
                 persistSettings();
             }
             activateRole(Role::clock);
+            notice("app_error", packageId.data(), "error_" + std::to_string(unsigned(logicError)));
         }
         logicDirty = logicError != Error::ok || runtime_.visualChanged();
+    }
+    if (!pendingUiAction_.empty()) {
+        applyUiAction();
+        logicDirty = true;
     }
     const auto minute = now() / 60;
     if (minute != renderedMinute_) {
@@ -585,7 +738,9 @@ bool Core::tick() {
         companion_.valid = false;
         events_.post({2, 0, runtime_.generation()});
     }
-    bool dirty = logicDirty;
+    const bool operationDirty = operationTick();
+    const bool edgeDirty = edgeTick();
+    bool dirty = logicDirty || operationDirty || edgeDirty;
     Event event;
     while (events_.poll(event))
         if (event.generation == runtime_.generation()) {
@@ -627,7 +782,11 @@ const Values &Core::bindings() {
     std::snprintf(
         date, sizeof(date), "%02d.%02d.%04d", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900);
     values["time.read"] = epoch ? time : "--:--";
-    values["time.date"] = epoch ? date : "Sync time in Flare";
+    const auto localized = [&](const char *key, const char *fallback) -> std::string {
+        const auto found = locale_.find(key);
+        return found == locale_.end() ? fallback : found->second;
+    };
+    values["time.date"] = epoch ? date : localized("sync_time", "Sync time in Flare");
     values["system.info"] = std::string(DeviceProfile);
     for (auto &[key, value] : locale_)
         values["locale:" + key] = value;
@@ -640,7 +799,10 @@ const Values &Core::bindings() {
         launcher_.clear();
         packages_.visit([&](const Installed &installed) {
             for (const auto &component : installed.manifest.components) {
-                if (component.type == Component::app || component.type == Component::watchface) {
+                if ((component.type == Component::app || component.type == Component::watchface) &&
+                    installed.manifest.id != "system.boot" &&
+                    installed.manifest.id != "system.operations" &&
+                    installed.manifest.id != "system.status") {
                     if (launcher_.size() + installed.manifest.name.size() >= 170) {
                         return false;
                     }
@@ -677,9 +839,17 @@ const Values &Core::bindings() {
 }
 Error Core::scene(FlintRender::Scene &scene) {
     TimingScope timing(platform_.microseconds, sceneTiming_);
-    auto error = runtime_.render(bindings(), scene);
+    auto error = presentation_ ? operationRender(scene)
+        : edge_                ? edgeRender(scene)
+                               : runtime_.render(bindings(), scene);
+    if (error != Error::ok && presentation_) {
+        presentation_.reset();
+        operationUntil_ = UINT64_MAX;
+        error = runtime_.render(bindings(), scene);
+    }
     if (error != Error::ok) {
         const auto failed = runtime_.manifest().id + "/" + runtime_.component().id;
+        const auto failure = error;
         runtime_.stop();
         const auto selected = settings_.find("role1");
         if (selected != settings_.end() && selected->second == failed) {
@@ -693,33 +863,74 @@ Error Core::scene(FlintRender::Scene &scene) {
         if (error != Error::ok) {
             return error;
         }
+        notice("app_error", failed, "error_" + std::to_string(unsigned(failure)));
+        if (presentation_)
+            error = operationRender(scene);
     }
+    bool iconsPrepared = false;
     for (int i = 0; i < scene.count; ++i) {
+        if (scene.ops[i].kind == FlintRender::CatalogIcon) {
+            if (!iconsPrepared) {
+                const auto mode = theme_.find("icons"), appearance = theme_.find("appearance");
+                icons_.synchronize(packages_.revision(), runtime_.generation(),
+                    mode != theme_.end() && mode->second == "themed",
+                    appearance != theme_.end() && appearance->second == "dark");
+                iconsPrepared = true;
+            }
+            scene.resourceRevision = icons_.generation();
+        }
         auto &color = scene.ops[i].color;
         const char *key = color == 0xfffd ? "background"
             : color == 0xfffc             ? "text"
             : color == 0xfffe             ? "accent"
+            : color == 0xfffb             ? "surface"
+            : color == 0xfffa             ? "pressed"
+            : color == 0xfff9             ? "muted"
                                           : nullptr;
         if (key) {
             auto it = theme_.find(key);
             if (it != theme_.end())
                 color = strtoul(it->second.c_str(), nullptr, 16);
+            else
+                color = color == 0xfffb ? 0x2105
+                    : color == 0xfffa   ? 0x39e9
+                    : color == 0xfff9   ? 0xa536
+                    : color == 0xfffd   ? 0x1082
+                    : color == 0xfffc   ? 0xf7bf
+                                        : 0x8f3d;
         }
+    }
+    if (!presentation_ && startupGeneration_ && runtime_.generation() == startupGeneration_ &&
+        startupUntil_ == UINT64_MAX) {
+        // Begin the short brand presentation only after its first successful scene.
+        const auto at = platform_.monotonic();
+        startupUntil_ = at <= UINT64_MAX - 700 ? at + 700 : at;
     }
     return Error::ok;
 }
 void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     TimingScope timing(platform_.microseconds, paintTiming_);
-    FlintRender::resourceContext = &runtime_.resources();
+    FlintRender::resourceContext = this;
     FlintRender::resourceMetrics = [](void *context, unsigned font, uint32_t cp) {
-        return static_cast<ResourceManager *>(context)->metrics(font, cp);
+        return static_cast<Core *>(context)->runtime_.resources().metrics(font, cp);
     };
     FlintRender::resourceGlyph = [](void *context, unsigned font, uint32_t cp) {
-        return static_cast<ResourceManager *>(context)->glyph(font, cp);
+        return static_cast<Core *>(context)->runtime_.resources().glyph(font, cp);
     };
     FlintRender::resourceImage = [](void *context, FlintRender::Canvas &c,
                                      const FlintRender::Op &op) {
-        static_cast<ResourceManager *>(context)->image(c, op);
+        auto &core = *static_cast<Core *>(context);
+        if (op.kind == FlintRender::CatalogIcon) {
+            const auto value = [&](const char *key) -> std::string_view {
+                const auto it = core.theme_.find(key);
+                return it == core.theme_.end() ? std::string_view{} : it->second;
+            };
+            if (core.icons_.draw(core.packages_, core.runtime_.resources().decoder(), c, op,
+                    core.runtime_.generation(), value("icons") == "themed",
+                    value("appearance") == "dark"))
+                core.events_.post({4, 0, core.runtime_.generation()});
+        } else
+            core.runtime_.resources().image(c, op);
     };
     FlintRender::render(scene, canvas);
     FlintRender::resourceContext = nullptr;
@@ -728,6 +939,14 @@ void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     FlintRender::resourceImage = nullptr;
 }
 void Core::disconnect(Session &session) {
+    if (operationOwner_ == session.id && presentation_ && !notice_ &&
+        (operationPhase_ == OperationPhase::receiving ||
+            operationPhase_ == OperationPhase::verifying) &&
+        (!install_ || !install_->publishing())) {
+        operationUpdate(
+            OperationPhase::interrupted, operationDone_, operationTotal_, Error::cancelled);
+        operationOwner_ = 0;
+    }
     if (installOwner_ == session.id) {
         // Publication owns durable changes; a lost transport only discards its reply.
         if (!install_ || !install_->publishing())
@@ -759,6 +978,9 @@ static Frame errorReply(const Frame &request, Error error) {
     return {request.method, request.id, true, std::move(payload.data)};
 }
 Error Core::beginInstall(const Frame &request, const Session &session) {
+    icons_.clear();
+    if (transferCancelled_)
+        return Error::cancelled;
     if (install_ || installReply_)
         return Error::invalid_state;
     if (!session.id)
@@ -781,6 +1003,9 @@ Error Core::beginInstall(const Frame &request, const Session &session) {
     installPermissionsRevoked_ = false;
     installOwner_ = session.id;
     installRequest_ = {request.method, request.id, false, {}};
+    operationRemoving_ = false;
+    operationOwner_ = session.id;
+    operationUpdate(OperationPhase::verifying, 0, total);
     return Error::ok;
 }
 void Core::advanceInstall() {
@@ -789,6 +1014,8 @@ void Core::advanceInstall() {
     TimingScope timing(platform_.microseconds, installTiming_);
     ++installSteps_;
     auto error = install_->ready() ? Error::ok : install_->advance(4096);
+    operationUpdate(install_->ready() ? OperationPhase::publishing : OperationPhase::verifying,
+        install_->verifiedBytes(), install_->size());
     if (error == Error::ok && !install_->ready())
         return;
     std::string installedId;
@@ -836,6 +1063,8 @@ void Core::advanceInstall() {
             }
         }
     }
+    operationUpdate(error == Error::ok ? OperationPhase::complete : OperationPhase::failed,
+        install_->size(), install_->size(), error);
     auto reply = errorReply(installRequest_, error);
     if (error == Error::ok) {
         Writer payload;
@@ -1125,9 +1354,17 @@ Frame Core::handle(const Frame &request, Session &session) {
                 }
             }
             out.n(resume ? st.st_size : 0);
+            transferCancelled_ = false;
+            operationRemoving_ = false;
+            operationOwner_ = session.id;
+            operationUpdate(OperationPhase::receiving, resume ? uint32_t(st.st_size) : 0, total);
             break;
         }
         case Method::install_chunk: {
+            if (transferCancelled_) {
+                fail(Error::cancelled);
+                break;
+            }
             auto offset = in.n();
             if (!in.valid || in.pos == in.data.size()) {
                 fail(Error::invalid_argument);
@@ -1169,8 +1406,12 @@ Frame Core::handle(const Frame &request, Session &session) {
                 fsync(fileno(f)))
                 fail(Error::io_error);
             fclose(f);
-            if (error == Error::ok)
+            if (error == Error::ok) {
                 out.n(std::max<uint64_t>(size, offset + count));
+                operationUpdate(
+                    OperationPhase::receiving, std::max<uint64_t>(size, offset + count), total);
+            } else
+                operationUpdate(OperationPhase::failed, 0, total, error);
             break;
         }
         case Method::install_commit: {
@@ -1198,14 +1439,29 @@ Frame Core::handle(const Frame &request, Session &session) {
                     error = Error::permission_denied;
                 break;
             }
+            operationRemoving_ = true;
+            operationOwner_ = session.id;
+            operationUpdate(OperationPhase::removing, 0, 0);
+            if (platform_.present && presentation_ && !notice_ &&
+                operationPhase_ == OperationPhase::removing) {
+                FlintRender::Scene status;
+                if (scene(status) == Error::ok)
+                    platform_.present(status);
+            }
             error = revokePackage(id);
             if (error != Error::ok) {
+                operationUpdate(OperationPhase::failed, 0, 0, error);
                 break;
             }
             bool active = runtime_.manifest().id == id;
             if (active)
                 runtime_.stop();
+            icons_.clear();
             error = packages_.remove(id);
+            operationRemoving_ = true;
+            operationOwner_ = session.id;
+            operationUpdate(error == Error::ok ? OperationPhase::complete : OperationPhase::failed,
+                0, 0, error);
             if (active)
                 activateRole(Role::clock);
             if (error == Error::ok) {
@@ -1282,6 +1538,18 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto key = in.text(64), value = in.text(192);
             if (!in.done()) {
                 fail(Error::invalid_argument);
+                break;
+            }
+            if (key == "reduce_motion") {
+                if (value != "0" && value != "1") {
+                    fail(Error::invalid_argument);
+                    break;
+                }
+                const auto old = settings_;
+                settings_[key] = value;
+                error = persistSettings();
+                if (error != Error::ok)
+                    settings_ = old;
                 break;
             }
             if (key == "ble_enabled") {
@@ -1396,6 +1664,8 @@ Frame Core::handle(const Frame &request, Session &session) {
             error = persistGrants();
             if (error != Error::ok)
                 grants_ = std::move(old);
+            else
+                notice(enabled ? "access_allowed" : "access_revoked", p.manifest.name, name, scope);
             break;
         }
         case Method::metrics:
@@ -1414,6 +1684,8 @@ Frame Core::handle(const Frame &request, Session &session) {
             out.raw(platform_.pairing(action));
             if (out.data.empty())
                 fail(Error::permission_denied);
+            else if (action == "open")
+                notice("pairing_window", "Bluetooth", "pairing_wait");
             break;
         }
         case Method::rollback: {
@@ -1426,6 +1698,7 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto component = runtime_.component().id;
             if (active)
                 runtime_.stop();
+            icons_.clear();
             error = packages_.rollback(id);
             if (active) {
                 if (launch(id, component) != Error::ok)

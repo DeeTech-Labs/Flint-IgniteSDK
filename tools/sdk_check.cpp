@@ -80,8 +80,12 @@ int main(int argc, char **argv) {
             component.type == flint::Component::complication) {
             flint::Runtime runtime;
             error = runtime.launch({manifest, argv[1], false}, component.id, available, UINT64_MAX);
-            if (error != flint::Error::ok)
+            if (error != flint::Error::ok) {
+                const auto &diagnostic = runtime.diagnostic();
+                std::cerr << "Runtime " << component.id << ": peak=" << diagnostic.peak
+                          << " used=" << diagnostic.used << " " << diagnostic.message.data() << '\n';
                 return fail(error);
+            }
         } else if (component.type == flint::Component::theme ||
             component.type == flint::Component::locale) {
             flint::Values values;

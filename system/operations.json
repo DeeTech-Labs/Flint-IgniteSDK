@@ -1,0 +1,96 @@
+{
+    "id": "system.operations",
+    "name": "Package operations",
+    "publisher": "deetech",
+    "version": 2,
+    "permissions": [
+        "ui.render",
+        "system.locale.read"
+    ],
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "x": 0,
+                    "y": 0,
+                    "w": 280,
+                    "h": 240,
+                    "color": "theme.background"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 12,
+                    "y": 10,
+                    "w": 256,
+                    "h": 174,
+                    "color": "theme.surface",
+                    "extra": 24
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 43,
+                    "text": "${operation.title}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 129,
+                    "y": 112,
+                    "text": "${operation.progress}",
+                    "color": "theme.text",
+                    "font": 2,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 208,
+                    "y": 111,
+                    "text": "${operation.unit}",
+                    "color": "theme.muted"
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 148,
+                    "text": "${operation.phase}",
+                    "color": "theme.text",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 176,
+                    "text": "${operation.detail}",
+                    "color": "theme.muted",
+                    "font": 0,
+                    "center": true
+                },
+                {
+                    "kind": "rounded",
+                    "x": 12,
+                    "y": 192,
+                    "w": 256,
+                    "h": 44,
+                    "color": "theme.accent",
+                    "extra": 18
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 221,
+                    "text": "${operation.button}",
+                    "color": "theme.background",
+                    "font": 0,
+                    "center": true
+                }
+            ]
+        }
+    ]
+}

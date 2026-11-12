@@ -7,7 +7,7 @@
 namespace FlintRender {
 constexpr int MaxOps = 32, MaxData = 512, HeaderSize = 10, OpSize = 18;
 constexpr size_t MaxEncoded = HeaderSize + MaxOps * OpSize + MaxData;
-enum Kind : uint8_t { Rect = 1, Rounded = 2, Line = 3, Text = 4, Bitmap = 5, ResourceImage = 6 };
+enum Kind : uint8_t { Rect = 1, Rounded = 2, Line = 3, Text = 4, Bitmap = 5, ResourceImage = 6, CatalogIcon = 7 };
 enum Font : uint8_t { Body = 0, TimeLarge = 1, TimeCompact = 2, Brand = 3 };
 struct Op {
     uint8_t kind = 0, font = 0;
@@ -17,6 +17,7 @@ struct Op {
     int16_t inkX = 0, inkY = 0, inkW = -1, inkH = 0;
 };
 struct Scene {
+    uint64_t resourceRevision = 0; // Derived catalog invalidation; not serialized.
     uint16_t width = 280, height = 240, used = 0;
     uint8_t count = 0;
     bool valid = true;
@@ -106,7 +107,7 @@ inline bool decode(const uint8_t *bytes, size_t size, Scene &s) {
         op.offset = get16(p + 12);
         op.length = get16(p + 14);
         op.extra = get16(p + 16);
-        if (op.kind < Rect || op.kind > ResourceImage || op.font > 31 ||
+        if (op.kind < Rect || op.kind > CatalogIcon || op.font > 31 ||
             unsigned(op.offset) + op.length > next.used || op.x < -320 || op.y < -320 ||
             op.x > 640 || op.y > 640 || op.w < 0 || op.w > 640 || op.h < 0 || op.h > 640)
             return false;
@@ -115,6 +116,8 @@ inline bool decode(const uint8_t *bytes, size_t size, Scene &s) {
                 op.h != 16 * op.extra))
             return false;
         if (op.kind == ResourceImage && (op.length || !op.extra || !op.w || !op.h))
+            return false;
+        if (op.kind == CatalogIcon && (op.length || op.w != 48 || op.h != 48))
             return false;
         if (op.kind == Text && (op.length > 192 || op.extra > 1))
             return false;

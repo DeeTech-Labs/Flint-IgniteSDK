@@ -36,7 +36,7 @@ market admission, or battery-life guarantees.
 A Lua package has exactly one app/watchface component, capability bit 64, 48..144 KiB
 of declared internal memory and 1..100000 Lua instructions per callback. Source is
 limited to 16 KiB. Binary chunks are rejected. The current development contract is
-0x20261105; regenerate packages using this SDK. There is no previous-format loader.
+0x20261112; regenerate packages using this SDK. There is no previous-format loader.
 
 The source returns a table with `update(dt_ms, pressed)`. It is called once at load
 with zero elapsed time, then explicitly by Runtime or the Core scheduler. Elapsed
@@ -114,7 +114,7 @@ Marketplace signatures and publication remain separate work.
 
 ## Application API 1: input, state and services
 
-`"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua project's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Development revision `0x20261105`, package/scene formats and Companion method identifiers are unchanged: this is an additive extension and old packages retain their previous Lua environment. Consumers must deliberately update their SDK pin and rebuild C++ adapters; the ABI of extended C++ classes is not preserved.
+`"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua project's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Current revision `0x20261112` requires FLM2/FLIM v2 and rebuilding all packages and consumers. No legacy decoder is provided; see [FLIM](FLIM.md). C++ ABI compatibility is not preserved.
 
 New functions require `CapAppApi`. Invalid argument counts/types, ranges and UTF-8 terminate the handler with a diagnostic. Service/access failures return numeric `flint::Error` codes: 0=ok, 4=not_supported, 5=permission_denied, 7=source_unavailable, 9=quota_exceeded; see `include/flint/contracts.h` for the complete enumeration. No standard libraries or unrestricted `require`, `debug`, `io`, `os` are exposed.
 
@@ -174,3 +174,45 @@ run uses shared Core and a virtual monotonic clock. JSON contains exactly steps 
 The Lua heap still cannot exceed `declared internal - 16 KiB`. The declaration additionally reserves estimated native manifest/component allocations, `LuaApp::Impl` (including published values), and Lua source at the loading peak. The Lua heap is reduced when necessary; its 16 KiB minimum remains. An older package whose actual native peak exceeds its declaration may now fail launch; package format and ContractRevision remain unchanged. Impl allocation failure is explicit, and failed launch releases the file and resources even before lifecycle.create.
 
 Diagnostics distinguish `runtime_resident_bytes` (fixed Runtime, including ResourceManager and its buffers, already included in the platform baseline), native heap/peak estimates, and Lua used/peak. STL capacity estimates exclude allocator headers, fragmentation, stack, validation/scene bindings and hardware queues. The adapter must measure the full peak and largest free block; estimates do not guarantee total RAM.
+
+## Touch and interactive system screens
+
+Touch packages declare `app_api: 1`, `CapTouchEvents=2048` and `CapInteractiveUi=4096` alongside Lua/Declarative/AppApi (6337 combined). These are Runtime API capabilities, not a claim that the device has a physical touch sensor. Input requires `input.focused`, navigation `ui.navigation`, and catalogue access `packages.list`.
+
+`InputEvent` retains its leading `kind/value/generation` fields and adds logical `x/y`, `pointer` (0..15) and monotonic-ms `at`. New kinds are `touch_down`, `touch_move`, `touch_up`, `touch_cancel`. Coordinates are bounded to −320..640 for movement outside the viewport; stale generations are rejected. Consecutive moves for one pointer are coalesced, without replacing down/up/cancel. `event(kind, value, x, y, pointer, at)` avoids allocating a Lua table for each sample; older handlers ignore the extra arguments. Adapters use the Core clock and wake its owner after queuing input. No physical touch driver is added.
+
+- `ignite.read('packages.list', 'count')` returns the tile count and error; `revision` detects catalogue changes.
+- `ignite.catalog(index)` returns `name, target, error`, with zero-based indices matching catalogue icons. Names fit grid metrics; targets are validated `package/component` strings.
+- `ignite.action('role', 'clock'|'launcher'|'settings')` and `ignite.action('launch', target)` return an error and queue navigation after Lua returns. A focused release/up callback is required; load/update/timer calls return `user_interaction_required`. Deferred actions are generation-bound.
+- `ignite.action('system', command)` additionally requires a factory package with the active Settings role. Commands are `ble_toggle`, `offset_up`, `offset_down`, `language`, `motion`. Claiming Settings metadata does not grant a user package this authority.
+
+Host compilation supports `logic.includes`: at most eight relative UTF-8 Lua sources within the project root, concatenated before `logic.path`. The original 16 KiB source bound includes generated UI IDs. Runtime gains neither `require` nor filesystem access. Base Lua screens declare 48 KiB internal memory and 4096 instructions; platform limits are unchanged.
+
+Persistent `reduce_motion` accepts `0/1` through standard `settings_get/settings_set`. It disables automatic inertia and introductory movement while preserving direct finger tracking. Flare Preview and physical controllers need corresponding event adapters; SDK host tests inject events directly through Core.
+
+## Application icons
+
+See [FLIM.md](FLIM.md) for FLIM v2, FLM2 manifest resources, theme selection, converter commands and bounded memory. Example: `examples/icons/project.json`. `ignite.catalog(index)` returns `name, target, error`; the placeholder symbol is removed. `catalog_icon` nodes support `ignite.set(node, "catalog", index)`. All consumers and packages require revision `0x20261112`.
+
+Factory Clock and Settings provide authored color INDEX8 icons and separate A4 masks. Source PNGs live in `system/assets/`; reproduce their geometry with `python tools/build_system_icons.py`, then rebuild packages using `python tools/build_system.py`. These run on a Pillow-equipped host, never in firmware. Read-only numeric `utc_offset_minutes` under `system.settings.read` provides a typed UTC value; the original string `utc_offset` remains available.
+
+## Generation without source-tree writes
+
+Pillow is required for factory package generation during CMake configure, including builds with tests disabled.
+
+CMake automatically runs `cmake/FlintGenerate.cmake`. Outputs live in `<build>/generated/include/flint/`, `<build>/generated/factory/` and `<build>/generated/examples/<name>/sample.ignit`. The library searches generated headers before source headers, and SDK installation exports the generated versions. Tests receive `FLINT_FACTORY_DIR` and `FLINT_EXAMPLES_DIR` and do not rely on checked-in binary packages.
+
+Direct `generate_registry.py` defaults to `build/generated/include`; `build_system.py` defaults to `build/generated/factory` and `build/generated/examples`. Independent builds must select their own output directories:
+
+```sh
+python3 -B tools/generate_registry.py --output build/generated/include
+python3 -B tools/build_system.py --output build/generated/factory --examples-output build/generated/examples
+# Firmware: compile only factory packages.
+python3 -B tools/build_system.py --output build/firmware-factory --skip-examples
+```
+
+Unchanged outputs retain their timestamps. Changed files publish through individual atomic replacements; an input compilation failure leaves previous packages untouched. The entire package set is not an atomic transaction: consumers must wait for successful generator completion. One build owns each output directory; do not point it at source `factory/`, `examples/` or `include/`.
+
+`build_system_icons.py --output <dir>` and `build_builtin_fonts.py --font-dir <fonts> --output <dir>` also default to `build/generated/`. Updating maintained PNG/font sources requires a separate reviewed copy, never an implicit build side effect. Existing source factory/sample packages and headers remain snapshots for older consumers; new CMake builds neither refresh them nor use them instead of current generated artifacts.
+
+Current touch/UI contracts use `ContractRevision=0x20261112` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. Flare still reading source `factory/` and `examples/` requires a separate resource integration migration; the portable `Flint::Platform` target already uses the new scheme.

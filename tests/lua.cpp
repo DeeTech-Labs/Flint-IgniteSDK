@@ -98,6 +98,18 @@ int main() {
                "true do end end end}") == Error::ok);
     CHECK(app.update(33, false) == Error::execution_limit);
     CHECK(!app.active());
+    AppHost host;
+    host.enabled = true;
+    for (auto kind : {FlintRender::CatalogIcon, FlintRender::ResourceImage}) {
+        scene.ops[1].kind = kind;
+        scene.ops[1].w = scene.ops[1].h = 48;
+        CHECK(app.load("ignite.set(2,'x',5); return {update=function() end}", memory, 4096, scene,
+                  host) == Error::ok);
+        CHECK(scene.ops[1].x == 5);
+        CHECK(app.load("ignite.set(2,'w',64); return {update=function() end}", memory, 4096, scene,
+                  host) == Error::invalid_argument);
+        CHECK(scene.ops[1].w == 48);
+    }
     std::cout << "Lua limits, forbidden APIs, invalid code and repeated "
                  "teardown: passed\n";
 }

@@ -65,6 +65,7 @@ class Runtime {
     std::function<MemoryBudget()> availableMemory_;
     size_t nativeHeap_{}, nativePeak_{};
     bool loading_{}, focused_{true}, tickChanged_{}, pendingVisual_{};
+    bool inputDispatch_{};
     std::array<InputEvent, 16> inputs_{};
     size_t inputHead_{}, inputSize_{};
     Error appCall(

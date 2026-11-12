@@ -2,7 +2,7 @@
     "id": "system.clock",
     "name": "Clock",
     "publisher": "deetech",
-    "version": 1,
+    "version": 3,
     "permissions": [
         "ui.render",
         "time.read",
@@ -23,29 +23,50 @@
                 {
                     "kind": "text",
                     "x": 140,
-                    "y": 42,
-                    "center": true,
-                    "text": "${locale:clock}",
-                    "color": "theme.accent"
-                },
-                {
-                    "kind": "text",
-                    "x": 140,
-                    "y": 130,
-                    "center": true,
-                    "font": 1,
-                    "text": "${time.read}",
-                    "color": "theme.text"
-                },
-                {
-                    "kind": "text",
-                    "x": 140,
-                    "y": 185,
+                    "y": 55,
                     "center": true,
                     "text": "${time.date}",
+                    "color": "theme.muted"
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 150,
+                    "center": true,
+                    "text": "${time.read}",
+                    "font": 1,
                     "color": "theme.text"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 272,
+                    "y": 95,
+                    "w": 3,
+                    "h": 50,
+                    "extra": 1,
+                    "color": "theme.muted"
                 }
             ]
+        }
+    ],
+    "capabilities": 3,
+    "icons": {
+        "main": 100,
+        "mask": 101
+    },
+    "resources": [
+        {
+            "id": 100,
+            "path": "assets/clock.png",
+            "format": "image",
+            "representation": "INDEX8"
+        },
+        {
+            "id": 101,
+            "path": "assets/clock-mask.png",
+            "format": "image",
+            "representation": "A4",
+            "mask": "alpha"
         }
     ]
 }

@@ -3,3 +3,7 @@ __pycache__/
 build/
 build-*/
 CMakeUserPresets.json
+
+# Project-local build and temporary artifacts
+/build/
+/temp/

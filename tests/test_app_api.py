@@ -1,3 +1,4 @@
+from generated_paths import FACTORY_DIR
 import json
 import struct
 import subprocess
@@ -19,8 +20,8 @@ with tempfile.TemporaryDirectory() as directory:
             {"kind": "rect", "id": "indicator", "w": 10, "h": 10},
             {"kind": "text", "text": "counter=${app.counter};text=${app.text};save=${app.save};timer=${app.timer};power=${app.power};"}]}]}
     project["resources"] = [{"id": i, "path": str(i) + ".bin"} for i in (100, 101, 102)]
-    (root / "100.bin").write_bytes(struct.pack("<4sHHH", b"FLIM", 1, 1, 65535))
-    (root / "101.bin").write_bytes(struct.pack("<4sHHHH", b"FLIM", 2, 1, 65535, 0))
+    (root / "100.bin").write_bytes(struct.pack("<4sBBHHHIHB", b"FLIM", 2, 3, 1, 1, 0, 0, 65535, 255))
+    (root / "101.bin").write_bytes(struct.pack("<4sBBHHHIHBHB", b"FLIM", 2, 3, 2, 1, 0, 0, 65535, 255, 0, 255))
     (root / "102.bin").write_bytes(b"not an image")
     project["components"][0]["ui"].append({"id": "icon", "kind": "image", "resource": 100, "w": 1, "h": 1})
     source = '''local n = ignite.storage_get('count',0)
@@ -61,5 +62,5 @@ end}
     legacy = json.loads((ROOT / "examples/flappy-bird/project.json").read_text())
     (root / "main.lua").write_bytes((ROOT / "examples/flappy-bird/main.lua").read_bytes())
     legacy_path = root / "legacy.ignit"; legacy_path.write_bytes(compile_project(legacy, root))
-    subprocess.run([sys.argv[1], str(root / "store"), str(ROOT / "factory"),
+    subprocess.run([sys.argv[1], str(root / "store"), str(FACTORY_DIR),
         str(counter), str(denied), str(fault), str(legacy_path)], check=True, timeout=10)
