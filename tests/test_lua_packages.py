@@ -40,18 +40,18 @@ with tempfile.TemporaryDirectory() as directory:
                    "local t={}; for i=1,100000 do t[i]=i end"):
         (root / "main.lua").write_text(source)
         check(False)
-    project["capabilities"] = 1
+    project["components"][0]["capabilities"] = 1
     try: compile_project(project, root)
     except ValueError: pass
     else: raise AssertionError("missing Lua capability accepted")
-    project["capabilities"] = 65
+    project["components"][0]["capabilities"] = 65
     for includes in (["../outside.lua"], "main.lua", ["main.lua"] * 9, [None]):
-        project["logic"]["includes"] = includes
+        project["components"][0]["logic"]["includes"] = includes
         try: compile_project(project, root)
         except (ValueError, TypeError): pass
         else: raise AssertionError("invalid Lua includes accepted")
-    project["logic"].pop("includes")
-    project["logic"]["path"] = "../outside.lua"
+    project["components"][0]["logic"].pop("includes")
+    project["components"][0]["logic"]["path"] = "../outside.lua"
     try: compile_project(project, root)
     except ValueError: pass
     else: raise AssertionError("logic escaped project")

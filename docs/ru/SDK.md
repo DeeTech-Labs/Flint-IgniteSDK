@@ -1,4 +1,8 @@
+[Первое приложение с проверяемыми командами](APP-QUICKSTART.md) · [Полный Lua API](LUA-API.md) · [Индекс](README.md)
+
 [English translation](../en/SDK.md)
+
+[Датчики, permissions и bounded Lua API](SENSORS.md)
 
 # Самостоятельный Flint IgniteSDK
 
@@ -8,25 +12,25 @@
 
 ## Сборка и установка
 
-Нужны CMake, компиляторы C/C++20, Python 3; Pillow — для конвертации изображений/шрифтов и интеграционных тестов. Lua 5.4.9 включена с исходной лицензией и проверенным хешем архива; при сборке интерпретатор не скачивается. Команды из корня SDK:
+Нужны CMake, компиляторы C/C++20, Python 3.11+ и Pillow в выбранном CMake interpreter до configure, включая штатную генерацию factory assets. Lua 5.4.9 включена с исходной лицензией и проверенным хешем архива; при сборке интерпретатор не скачивается. Команды из корня SDK:
 
 ```sh
-cmake -S . -B /tmp/ignite-build -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/ignite-build --parallel
-ctest --test-dir /tmp/ignite-build --output-on-failure
-cmake --install /tmp/ignite-build --prefix /tmp/ignite-sdk
-/tmp/ignite-sdk/bin/ignite init /tmp/my-clock --id demo.clock --publisher demo
-/tmp/ignite-sdk/bin/ignite build /tmp/my-clock/project.json /tmp/my-clock.ignit
-/tmp/ignite-sdk/bin/ignite check /tmp/my-clock.ignit
+cmake -S . -B build/docs-sdk -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/docs-sdk --config Debug --parallel 2
+ctest --test-dir build/docs-sdk -C Debug --output-on-failure
+cmake --install build/docs-sdk --config Debug --prefix build/docs-installed
+build/docs-installed/bin/ignite init build/my-clock --id demo.clock --publisher demo
+build/docs-installed/bin/ignite build build/my-clock/project.json build/my-clock.ignit
+build/docs-installed/bin/ignite check build/my-clock.ignit
 ```
 
-На Windows установленный скрипт `ignite` запускается через Python. В исходном дереве передайте `--validator /tmp/ignite-build/ignite-check` в `tools/ignite.py build/check`. Отчёты и диагностика CLI — UTF-8 независимо от кодовой страницы консоли. Ошибочная сборка сохраняет последний успешный пакет. JSON-отчёт показывает объявленные бюджеты и совместимость Runtime, но не измеренную вместимость устройства, подлинность издателя, допуск в магазин или автономность.
+На Windows установленный скрипт `ignite` запускается через Python. В исходном дереве передайте `--validator build/docs-sdk/ignite-check` в `tools/ignite.py build/check`. Отчёты и диагностика CLI — UTF-8 независимо от кодовой страницы консоли. Ошибочная сборка сохраняет последний успешный пакет. JSON-отчёт показывает объявленные бюджеты и совместимость Runtime, но не измеренную вместимость устройства, подлинность издателя, допуск в магазин или автономность.
 
 ## Приложение Lua
 
-`logic: {"language": "lua", "path": "main.lua"}` добавляет одну секцию текстового исходника. Lua-пакет содержит ровно один компонент app/watchface, бит возможностей 64, 48..144 КиБ заявленной внутренней памяти и 1..100000 инструкций Lua на обработчик. Исходник ограничен 16 КиБ, бинарные chunks отклоняются. Текущий контракт разработки — `0x20261112`; пересоберите пакеты этим SDK. Загрузчика старого формата нет.
+`components[].logic: {"language":"lua","path":"main.lua"}` задаёт отдельную текстовую Lua section выбранного component. `budget`, `permissions`, `capabilities`, `app_api`, `sensor_api`, `ipc_api` также находятся внутри component; package union не даёт runtime неявных прав. UI app/watchface и не более одной службы могут иметь разные исходники и отдельные VM. Каждая Lua VM имеет 48..144 КиБ component budget, 1..100000 инструкций и исходник до 16 КиБ; service admission дополнительно ограничен model quantum/pool. FLM3 и точная ревизия `0x20261114` требуют пересборки всех packages/consumers. Envelope/API/Companion остаются версии 1. См. [фоновые службы и миграцию](BACKGROUND-SERVICES.md).
 
-Исходник возвращает таблицу с `update(dt_ms, pressed)`. Первый вызов при загрузке имеет нулевое время, последующие выполняются Runtime или планировщиком Core. Core ограничивает шаг 100 мс. Ввод требует `input.focused`.
+Исходник возвращает таблицу с `update(dt_ms, pressed)`. Для foreground первый вызов при загрузке имеет нулевое время, последующие выполняются Runtime или планировщиком Core. Core ограничивает шаг 100 мс. Ввод требует `input.focused`.
 
 - `ignite.set(node, property, integer)` меняет x/y/w/h поддерживаемых собственных узлов UI. Нумерация с единицы; полноэкранный фон неизменяем. Границы соответствуют кодеку сцены. Ссылки на ресурсы и исполняемые обработчики заменять нельзя.
 - `ignite.value(key, integer)` публикует до 16 значений для `${app.key}` в тексте. Ключи: 1..32 строчные ASCII-буквы, цифры и подчёркивания; значения — знаковые i32.
@@ -34,8 +38,8 @@ cmake --install /tmp/ignite-build --prefix /tmp/ignite-sdk
 VM использует учитывающий память аллокатор и hook инструкций. Стандартные библиотеки, файловая система, OS, debug, загрузка модулей, корутины, динамическая загрузка и protected-call helpers не предоставляются. Ошибка уничтожает состояние; Core возвращается к часам/восстановлению. Это экспериментальная песочница, а не полный аудит безопасности. Счётчик инструкций не равен реальному времени. Нативные выделения памяти, разбор исходников, C-стек и задержки GC требуют измерений на устройстве.
 
 ```sh
-/tmp/ignite-sdk/bin/ignite build examples/flappy-bird/project.json /tmp/game.ignit
-/tmp/ignite-sdk/bin/ignite run /tmp/game.ignit --frames 120 --press-every 24 --image /tmp/game.ppm
+build/docs-installed/bin/ignite build examples/flappy-bird/project.json build/game.ignit
+build/docs-installed/bin/ignite run build/game.ignit --frames 120 --press-every 24 --image build/game.ppm
 ```
 
 `run` — детерминированная симуляция без окна с искусственными нажатиями и итоговым PPM, а не интерактивная игра. Симулятор Flare использует тот же Core для обновлений по времени. Физический игровой ввод на этом этапе не подключён.
@@ -67,7 +71,7 @@ git submodule update --init --recursive
 
 ## Application API 1: ввод, состояние и службы
 
-`"app_api": 1` в проекте Lua добавляет обязательный capability `128` (`CapAppApi`) к объявленным возможностям. Для Lua по-прежнему нужен бит `64`; например, `capabilities: 65` с `app_api: 1` компилируется в `193`. Старый Runtime отклонит такой пакет по отсутствующей возможности. Текущая ревизия `0x20261112` требует FLM2/FLIM v2 и пересборки всех пакетов и потребителей. Обратной совместимости нет; см. [иконки и FLIM](FLIM.md). ABI C++ расширенных классов не сохраняется.
+`"app_api": 1` внутри Lua component добавляет обязательный capability `128` (`CapAppApi`) к объявленным возможностям. Для Lua по-прежнему нужен бит `64`; например, `capabilities: 65` с `app_api: 1` компилируется в `193`. Старый Runtime отклонит такой пакет по отсутствующей возможности. Текущая ревизия `0x20261114` требует FLM3/FLIM v2 и пересборки всех пакетов и потребителей. Обратной совместимости нет; см. [иконки и FLIM](FLIM.md). ABI C++ расширенных классов не сохраняется.
 
 Все новые вызовы доступны только пакетам с `CapAppApi`. Неверные количество/типы аргументов, диапазоны и некорректный UTF-8 завершают обработчик с диагностикой. Ошибки доступа/служб возвращаются как числовые значения `flint::Error`: `0` — успех, `4` — `not_supported`, `5` — `permission_denied`, `7` — `source_unavailable`, `9` — `quota_exceeded`. Полный список находится в `include/flint/contracts.h`. Это не исключения Lua; стандартные библиотеки и unrestricted `require`, `debug`, `io`, `os` не добавляются.
 
@@ -95,7 +99,7 @@ git submodule update --init --recursive
 - `system.power.status` — key передаётся read-only адаптеру `Platform::power`; без адаптера `not_supported`. Доступные поля определяет профиль устройства; SDK не подставляет измерения.
 - `system.locale.read`, `system.theme.read`, `system.settings.read` — строка по ключу активной локали, темы или системных настроек; отсутствующий ключ — `source_unavailable`.
 
-Каждой службе нужна одноимённая декларация разрешения с пустым scope. Runtime проверяет capability, активное состояние/инициализацию и канонический класс разрешения перед вызовом Core. Этот диспетчер обслуживает только перечисленные automatic-службы; persistent/session/action/restricted-службы через него не открываются. Неизвестные имена возвращают `not_supported`. Регистрация разрешения не означает реализации службы. Никакие переданные приложением principals или grants не принимаются.
+Каждой службе нужна одноимённая декларация разрешения с пустым scope. Runtime проверяет capability, активное состояние/инициализацию и канонический класс разрешения перед вызовом Core. Перечисленные read-службы проверяются по component declaration; narrow outputs дополнительно используют текущую Core authorization, включая session `ui.brightness`. Регистрация произвольного permission не открывает новый API. Неизвестные имена возвращают `not_supported`. Регистрация разрешения не означает реализации службы. Никакие переданные приложением principals или grants не принимаются.
 
 - `ignite.storage_get(key)` возвращает `string, error` или `nil, error`.
 - `ignite.storage_get(key, default_integer)` возвращает сохранённое число i32; при отсутствии ключа или реализации — default с соответствующим кодом ошибки. Некорректное числовое содержимое возвращает nil/`invalid_argument`, повреждение файла не маскируется значением по умолчанию.
@@ -114,8 +118,8 @@ git submodule update --init --recursive
 ### Воспроизводимые сценарии
 
 ```sh
-python3 tools/ignite.py build examples/counter/project.json /tmp/counter.ignit --validator /tmp/ignite-build/ignite-check
-python3 tools/ignite.py run /tmp/counter.ignit --scenario examples/counter/scenario.json --runner /tmp/ignite-build/ignite-run --image /tmp/counter.ppm
+python3 tools/ignite.py build examples/counter/project.json build/counter.ignit --validator build/docs-sdk/ignite-check
+python3 tools/ignite.py run build/counter.ignit --scenario examples/counter/scenario.json --runner build/docs-sdk/ignite-run --image build/counter.ppm
 ```
 
 `run` использует общий Core и виртуальные monotonic часы. JSON содержит ровно `steps` (1..4096 шагов, файл до 256 КиБ). Операции: `advance` с `ms` 0..86400000; `input` с kind и необязательными value/expect (ожидаемый код ошибки постановки); `suspend`, `resume`, `restart` (новый запуск приложения), `reboot` (новый Core на том же хранилище); `expect_text`, `expect_state`, `expect_error` (последний код ошибки Core); `permission` с permission/scope/enabled через доверенный Companion API. Отзыв поддерживается для уже реализованных grant-разрешений; automatic-разрешения этим механизмом не отзываются. Неизвестные поля/операции и неверные типы отклоняются. Первая неуспешная проверка завершает CLI с ненулевым кодом и номером шага. `--storage` сохраняет состояние между запусками CLI, `--factory` задаёт заводские пакеты для сценариев восстановления. Без них используется временное хранилище. Драйверы дисплея/ввода и физические BLE, Flash, RAM, стек, задержки и батарея сценарием не проверяются.
@@ -124,7 +128,7 @@ python3 tools/ignite.py run /tmp/counter.ignit --scenario examples/counter/scena
 
 `Platform::memory` задаёт стабильную допустимость пакетов. Не передавайте сюда текущий свободный heap: временная нехватка памяти не должна скрывать установленный пакет или включать rollback. Опциональный `available_memory` проверяется только Runtime при запуске, отдельно для internal RAM и PSRAM; отказ возвращает `resource_exhausted`, сохраняя каталог и прежнее приложение до передачи владения. Обновление, прошедшее проверку целостности, не откатывается из-за временной нехватки памяти при активации; Core пробует заводские часы и сохраняет ошибку запуска.
 
-Lua heap по-прежнему не превышает `declared internal - 16 KiB`. Дополнительно из декларации резервируется оценка native manifest/component allocations, `LuaApp::Impl` (включая опубликованные значения) и исходного Lua-текста на пике загрузки. При необходимости Lua heap уменьшается; минимум 16 KiB сохраняется. Это может отклонить запуск прежнего пакета, фактический native-пик которого не помещается в декларацию; формат и ContractRevision не меняются. Ошибка создания Impl возвращается явно, неудачный запуск закрывает файл и очищает ресурсы даже до lifecycle.create.
+Foreground Lua heap не превышает `declared internal - 16 KiB`. Дополнительно из декларации резервируется оценка native manifest/component allocations, `LuaApp::Impl` (включая опубликованные значения) и исходного Lua-текста на пике загрузки. При необходимости Lua heap уменьшается; минимум 16 KiB сохраняется. Это может отклонить запуск прежнего пакета, фактический native-пик которого не помещается в декларацию; формат и ContractRevision не меняются. Ошибка создания Impl возвращается явно, неудачный запуск закрывает файл и очищает ресурсы даже до lifecycle.create.
 
 Диагностика разделяет `runtime_resident_bytes` (фиксированный Runtime, включая ResourceManager и его буферы, уже учтённый платформой при baseline), оценки native heap/пика и Lua used/peak. Оценки ёмкостей STL не включают allocator headers, фрагментацию, стек, validation/scene binding и аппаратные очереди. Полный пик и крупнейший свободный блок измеряются адаптером; оценки не являются обещанием общей RAM.
 
@@ -139,7 +143,7 @@ Touch-пакеты указывают `app_api: 1` и capabilities `CapTouchEven
 - `ignite.action('role', 'clock'|'launcher'|'settings')` и `ignite.action('launch', target)` возвращают код ошибки и ставят переход после Lua callback. Нужен фактический focused release/up; вызов из load/update/timer возвращает `user_interaction_required`. Generation связывает отложенное действие с текущим запуском.
 - `ignite.action('system', command)` дополнительно требует заводской пакет с активной ролью Settings. Команды: `ble_toggle`, `offset_up`, `offset_down`, `language`, `motion`. Обычный пакет не получает эти права, даже объявив роль Settings.
 
-Общие обработчики жестов подключаются на компьютере через `logic.includes`: до восьми относительных UTF-8 Lua-файлов внутри корня проекта, последовательно перед основным `logic.path`. Итоговый исходник вместе с автоматически созданными UI IDs ограничен прежними 16 КиБ. Runtime не выполняет `require` и не получает доступ к файловой системе. Объявленный бюджет базовых Lua-экранов — 48 КиБ internal и 4096 instructions; лимиты платформы не увеличены.
+Общие обработчики жестов подключаются на компьютере через `components[].logic.includes`: до восьми относительных UTF-8 Lua-файлов внутри корня проекта, последовательно перед основным `components[].logic.path`. Итоговый исходник вместе с автоматически созданными UI IDs ограничен прежними 16 КиБ. Runtime не выполняет `require` и не получает доступ к файловой системе. Объявленный бюджет базовых Lua-экранов — 48 КиБ internal и 4096 instructions; лимиты платформы не увеличены.
 
 `reduce_motion` — сохранённая настройка `0/1`, доступная стандартным `settings_get/settings_set`. Она отключает автоматическую инерцию и вступительное движение, сохраняя прямое отслеживание пальца. Передача событий из Flare Preview и физического контроллера требует соответствующего адаптера; host-тесты SDK подают их непосредственно через Core.
 
@@ -168,4 +172,7 @@ python3 -B tools/build_system.py --output build/firmware-factory --skip-examples
 
 `build_system_icons.py --output <dir>` и `build_builtin_fonts.py --font-dir <fonts> --output <dir>` также пишут в `build/generated/` по умолчанию. Обновление сопровождаемых PNG/шрифтов — отдельный ручной перенос и review результатов, а не побочный эффект сборки. Сохранённые исходные factory/sample-пакеты и заголовки остаются снимками для прежних потребителей; новая CMake-сборка не обновляет их и не использует их вместо актуальной генерации.
 
-Текущие touch/UI-контракты имеют `ContractRevision=0x20261112`, при номинальном Application API 1. Подключайте соответствующее дерево SDK целиком: заголовки, `core_ui.cpp`, `core_touch.cpp`, ресурсы и системные пакеты. Равенство номинальной API-версии не означает совместимость со старой ревизией. Для Flare, который ещё читает исходные `factory/` и `examples/`, требуется отдельная миграция подключения ресурсов на сгенерированные пути; портируемый target `Flint::Platform` уже использует новую схему.
+Текущие touch/UI-контракты имеют `ContractRevision=0x20261114`, при номинальном Application API 1. Подключайте соответствующее дерево SDK целиком: заголовки, `core_ui.cpp`, `core_touch.cpp`, ресурсы и системные пакеты. Равенство номинальной API-версии не означает совместимость со старой ревизией. OS и Flare используют build-local generated paths; ручное обновление исходных снимков не заменяет генерацию.
+
+
+[Фоновые службы, FLM3 component budgets, IPC и atomic shared state](BACKGROUND-SERVICES.md).

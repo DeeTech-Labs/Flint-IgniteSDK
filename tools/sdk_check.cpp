@@ -1,4 +1,5 @@
 #include <flint/runtime.h>
+#include <flint/service_runtime.h>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -83,9 +84,16 @@ int main(int argc, char **argv) {
             if (error != flint::Error::ok) {
                 const auto &diagnostic = runtime.diagnostic();
                 std::cerr << "Runtime " << component.id << ": peak=" << diagnostic.peak
-                          << " used=" << diagnostic.used << " " << diagnostic.message.data() << '\n';
+                          << " used=" << diagnostic.used << " " << diagnostic.message.data()
+                          << '\n';
                 return fail(error);
             }
+        } else if (component.type == flint::Component::service) {
+            flint::ServiceRuntime service;
+            error = service.launch(
+                {manifest, argv[1], false}, component.id, available, UINT64_MAX, {1, 1}, {});
+            if (error != flint::Error::ok)
+                return fail(error);
         } else if (component.type == flint::Component::theme ||
             component.type == flint::Component::locale) {
             flint::Values values;

@@ -3,7 +3,6 @@
     "name": "English",
     "publisher": "deetech",
     "version": 3,
-    "permissions": [],
     "components": [
         {
             "id": "en",
@@ -70,7 +69,14 @@
                 "install_flare": "Install from Flare",
                 "removing": "Removing data",
                 "wait": "Please wait"
-            }
+            },
+            "permissions": [],
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            },
+            "capabilities": 1
         }
     ]
 }

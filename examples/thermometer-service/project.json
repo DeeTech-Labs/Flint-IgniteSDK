@@ -1,0 +1,89 @@
+{
+    "id": "demo.thermometer-service",
+    "name": "Background thermometer",
+    "publisher": "demo",
+    "version": 1,
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "app_api": 1,
+            "ipc_api": 1,
+            "capabilities": 65,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "permissions": [
+                "ui.render",
+                "input.focused",
+                "storage.private",
+                "app.ipc"
+            ],
+            "logic": {
+                "language": "lua",
+                "path": "main.lua",
+                "includes": [
+                    "shared.lua"
+                ]
+            },
+            "ui": [
+                {
+                    "kind": "rect",
+                    "w": 280,
+                    "h": 240,
+                    "color": "theme.background"
+                },
+                {
+                    "kind": "text",
+                    "x": 12,
+                    "y": 40,
+                    "text": "Temperature: ${app.temperature}"
+                },
+                {
+                    "kind": "text",
+                    "x": 12,
+                    "y": 80,
+                    "text": "Humidity: ${app.humidity}"
+                },
+                {
+                    "kind": "text",
+                    "x": 12,
+                    "y": 120,
+                    "text": "Status: ${app.status}"
+                }
+            ]
+        },
+        {
+            "id": "worker",
+            "type": "service",
+            "app_api": 1,
+            "sensor_api": 1,
+            "ipc_api": 1,
+            "capabilities": 64,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "permissions": [
+                "app.background.execute",
+                "sensors.temperature",
+                "sensors.humidity",
+                "time.timer.create",
+                "storage.private",
+                "app.ipc",
+                "time.monotonic",
+                "app.background.autostart"
+            ],
+            "logic": {
+                "language": "lua",
+                "path": "service.lua",
+                "includes": [
+                    "shared.lua"
+                ]
+            }
+        }
+    ]
+}

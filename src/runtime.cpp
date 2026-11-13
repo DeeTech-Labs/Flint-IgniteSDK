@@ -8,8 +8,11 @@ static size_t manifestHeapEstimate(const Manifest &m) {
         m.components.capacity() * sizeof(ComponentInfo);
     for (const auto &d : m.permissions)
         bytes += d.permission.capacity() + d.scope.capacity() + 2;
-    for (const auto &c : m.components)
-        bytes += c.id.capacity() + 1;
+    for (const auto &c : m.components) {
+        bytes += c.id.capacity() + 1 + c.permissions.capacity() * sizeof(Declaration);
+        for (const auto &d : c.permissions)
+            bytes += d.permission.capacity() + d.scope.capacity() + 2;
+    }
     return bytes;
 }
 Error Runtime::launch(
@@ -47,12 +50,6 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
     if ((m.capabilities & caps) != m.capabilities)
         return Error::not_supported;
     auto error = Error::ok;
-    bool canRender = false;
-    for (auto &d : m.permissions)
-        if (d.permission == "ui.render")
-            canRender = true;
-    if (!canRender)
-        return Error::permission_denied;
     ComponentInfo component;
     bool found = false;
     for (auto &c : m.components)
@@ -66,6 +63,12 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
     if (component.type != Component::app && component.type != Component::watchface &&
         component.type != Component::widget && component.type != Component::complication)
         return Error::not_supported;
+    bool canRender = false;
+    for (auto &d : component.permissions)
+        if (d.permission == "ui.render")
+            canRender = true;
+    if (!canRender)
+        return Error::permission_denied;
     Entry e;
     bool ui = false;
     for (uint32_t i = 0; i < p.count(); ++i) {
@@ -82,13 +85,14 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
     if (p.read(e, 0, bytes) != Error::ok || !FlintRender::decode(bytes.data(), bytes.size(), scene))
         return Error::invalid_package;
     bool ownResources = false;
-    for (const auto &declaration : m.permissions) {
+    for (const auto &declaration : component.permissions) {
         ownResources = ownResources || declaration.permission == "ui.resources";
     }
     for (int index = 0; index < scene.count; ++index) {
         const auto &operation = scene.ops[index];
         if (operation.kind == FlintRender::CatalogIcon) {
-            const bool declared = std::any_of(m.permissions.begin(), m.permissions.end(),
+            const bool declared = std::any_of(component.permissions.begin(),
+                component.permissions.end(),
                 [](const auto &d) { return d.permission == "packages.list" && d.scope.empty(); });
             if (!declared || !(caps & CapInteractiveUi) || !(m.capabilities & CapInteractiveUi))
                 return Error::permission_denied;
@@ -133,7 +137,10 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
             start = end + 1;
         }
     }
-    const auto nativeManifest = manifestHeapEstimate(m) + component.id.capacity() + 1;
+    auto nativeManifest = manifestHeapEstimate(m) + component.id.capacity() + 1 +
+        component.permissions.capacity() * sizeof(Declaration);
+    for (const auto &d : component.permissions)
+        nativeManifest += d.permission.capacity() + d.scope.capacity() + 2;
     const auto sceneBytes = bytes.capacity();
     Bytes{}.swap(bytes);
     stop();
@@ -153,16 +160,16 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
     for (uint32_t i = 0; i < package_.count(); ++i) {
         Entry code;
         package_.entry(i, code);
-        if (code.type != Section::lua)
+        if (code.id != component_.logicSection)
             continue;
         const auto nativeLoad = nativeManifest + LuaApp::nativeBytes() + code.size;
         // Preserve the existing Lua heap ceiling while charging native state and source peak.
-        if (nativeLoad + 16 * 1024 > manifest_.budget.internal_bytes) {
+        if (nativeLoad + 16 * 1024 > component_.budget.internal_bytes) {
             stop();
             return Error::resource_exhausted;
         }
-        const auto luaLimit = std::min<size_t>(manifest_.budget.internal_bytes - 16 * 1024,
-            manifest_.budget.internal_bytes - nativeLoad);
+        const auto luaLimit = std::min<size_t>(component_.budget.internal_bytes - 16 * 1024,
+            component_.budget.internal_bytes - nativeLoad);
         nativeHeap_ = nativeManifest + LuaApp::nativeBytes();
         nativePeak_ = std::max<size_t>(nativePeak_, nativeLoad);
         Bytes source(code.size);
@@ -177,10 +184,33 @@ Error Runtime::launchValidated(File &candidate, Package &p, Manifest m, std::str
                 const auto &host = static_cast<Runtime *>(context)->host_;
                 return host.monotonic ? host.monotonic(host.context) : uint64_t(0);
             },
-            bool(manifest_.capabilities & CapAppApi)};
+            bool(component_.capabilities & CapAppApi), nullptr,
+            [](void *context, const sensors::Request &request, sensors::Reply &reply) {
+                return static_cast<Runtime *>(context)->sensorCall(request, reply);
+            }};
+        if (!(component_.capabilities & sensors::Capability))
+            bridge.sensor = nullptr;
+        bridge.microseconds = host_.microseconds ? [](void *context) {
+            const auto &host = static_cast<Runtime *>(context)->host_;
+            return host.microseconds(host.context);
+        } : static_cast<uint64_t (*)(void *)>(nullptr);
+        if (component_.capabilities & CapComponentIpc)
+            bridge.ipc = [](void *context, const IpcRequest &request, IpcReply &reply) {
+                return static_cast<Runtime *>(context)->ipcCall(request, reply);
+            };
+        if (component_.capabilities & CapBackground)
+            bridge.services = [](void *context, const ServiceRequest &request, ServiceInfo &reply) {
+                return static_cast<Runtime *>(context)->serviceCall(request, reply);
+            };
+        for (const auto &declaration : component_.permissions) {
+            if (declaration.permission == "audio.play")
+                bridge.outputs |= 1;
+            if (declaration.permission == "ui.brightness")
+                bridge.outputs |= 2;
+        }
         if (error == Error::ok)
             error = lua_.load({reinterpret_cast<const char *>(source.data()), source.size()},
-                uint32_t(luaLimit), manifest_.budget.instructions, template_, bridge);
+                uint32_t(luaLimit), component_.budget.instructions, template_, bridge);
         loading_ = false;
         if (error != Error::ok) {
             stop();
@@ -202,7 +232,7 @@ Error Runtime::update(uint32_t elapsedMs, bool pressed) {
         if (!focused_)
             return Error::permission_denied;
         bool allowed = false;
-        for (const auto &d : manifest_.permissions)
+        for (const auto &d : component_.permissions)
             allowed |= d.permission == "input.focused";
         if (!allowed)
             return Error::permission_denied;
@@ -213,6 +243,8 @@ Error Runtime::update(uint32_t elapsedMs, bool pressed) {
     return error;
 }
 Error Runtime::stop() {
+    if (host_.cancelInstance)
+        host_.cancelInstance(host_.context);
     lua_.stop();
     nativeHeap_ = nativePeak_ = 0;
     inputHead_ = inputSize_ = 0;
@@ -241,7 +273,9 @@ Error Runtime::stop() {
 Error Runtime::suspend() {
     if (lifecycle_.state != State::active)
         return Error::invalid_state;
-    if (lua_.active() && (manifest_.capabilities & CapAppApi)) {
+    if (host_.cancelInstance)
+        host_.cancelInstance(host_.context);
+    if (lua_.active() && (component_.capabilities & CapAppApi)) {
         const auto error = lua_.event("suspend", 0);
         pendingVisual_ |= lua_.visualChanged();
         if (error != Error::ok) {
@@ -250,6 +284,8 @@ Error Runtime::suspend() {
         }
     }
     inputHead_ = inputSize_ = 0;
+    if (host_.cancelInstance)
+        host_.cancelInstance(host_.context);
     lifecycle_.dispatch(Lifecycle::deactivate);
     ++consumerGeneration_;
     return lifecycle_.dispatch(Lifecycle::suspend);
@@ -261,7 +297,7 @@ Error Runtime::resume() {
     lifecycle_.dispatch(Lifecycle::activate);
     ++consumerGeneration_;
     lua_.resumeClock(host_.monotonic ? host_.monotonic(host_.context) : 0);
-    if (lua_.active() && (manifest_.capabilities & CapAppApi)) {
+    if (lua_.active() && (component_.capabilities & CapAppApi)) {
         error = lua_.event("resume", 0);
         pendingVisual_ |= lua_.visualChanged();
         if (error != Error::ok)
@@ -277,7 +313,7 @@ Error Runtime::render(const Values &values, FlintRender::Scene &output) {
     scene.height = template_.height;
     uint32_t instructions = 0;
     for (int i = 0; i < template_.count; ++i) {
-        if (++instructions > manifest_.budget.instructions)
+        if (++instructions > component_.budget.instructions)
             return Error::execution_limit;
         if (!lua_.visible(unsigned(i)))
             continue;
@@ -298,7 +334,7 @@ Error Runtime::render(const Values &values, FlintRender::Scene &output) {
                 text[used++] = char(data[cursor++]);
                 continue;
             }
-            if (++instructions > manifest_.budget.instructions)
+            if (++instructions > component_.budget.instructions)
                 return Error::execution_limit;
             const size_t end = endOffset - op.offset;
             const std::string_view key(
@@ -308,7 +344,7 @@ Error Runtime::render(const Values &values, FlintRender::Scene &output) {
             std::array<char, 12> number{};
             if (key.starts_with("resource:")) {
                 const bool declared =
-                    std::any_of(manifest_.permissions.begin(), manifest_.permissions.end(),
+                    std::any_of(component_.permissions.begin(), component_.permissions.end(),
                         [](const auto &d) { return d.permission == "ui.resources"; });
                 if (!declared)
                     return Error::permission_denied;
@@ -370,29 +406,38 @@ Error Runtime::render(const Values &values, FlintRender::Scene &output) {
 }
 Error Runtime::appCall(
     AppService service, std::string_view key, std::string_view value, AppReply &reply) {
+    if (loading_ && (service == AppService::beep || service == AppService::brightness))
+        return Error::invalid_state;
     if (!loading_ && state() != State::active)
         return Error::invalid_state;
-    if (!(manifest_.capabilities & CapAppApi) || !(capabilities_ & CapAppApi))
+    if (!(component_.capabilities & CapAppApi) || !(capabilities_ & CapAppApi))
         return Error::not_supported;
     const auto required = servicePermission(service);
     const auto *spec = permission(required);
-    if (!spec || spec->access != Access::automatic)
+    if (!spec)
         return Error::not_supported;
     bool declared = false;
-    for (const auto &d : manifest_.permissions)
+    for (const auto &d : component_.permissions)
         if (d.permission == required && d.scope.empty())
             declared = true;
     if (!declared)
         return Error::permission_denied;
     if ((capabilities_ & spec->capability) != spec->capability)
         return Error::not_supported;
+    if (spec->access != Access::automatic) {
+        if (loading_ || !host_.authorize)
+            return Error::permission_denied;
+        const auto error = host_.authorize(host_.context, required);
+        if (error != Error::ok)
+            return error;
+    }
     if (service == AppService::timer)
         return Error::ok;
     if (service == AppService::packages &&
-        (!(capabilities_ & CapInteractiveUi) || !(manifest_.capabilities & CapInteractiveUi)))
+        (!(capabilities_ & CapInteractiveUi) || !(component_.capabilities & CapInteractiveUi)))
         return Error::not_supported;
     if (service == AppService::navigate || service == AppService::system_action) {
-        if (!(capabilities_ & CapInteractiveUi) || !(manifest_.capabilities & CapInteractiveUi))
+        if (!(capabilities_ & CapInteractiveUi) || !(component_.capabilities & CapInteractiveUi))
             return Error::not_supported;
         if (!inputDispatch_ || loading_ || !focused_)
             return Error::user_interaction_required;
@@ -433,6 +478,33 @@ Error Runtime::appCall(
         return Error::invalid_argument;
     return error;
 }
+Error Runtime::sensorCall(const sensors::Request &request, sensors::Reply &reply) {
+    // Loading includes package validation and the first update callback. No hardware intent
+    // or sensor cache access is permitted until the installed Runtime is active.
+    if (loading_ || state() != State::active)
+        return Error::invalid_state;
+    if (!(component_.capabilities & sensors::Capability) || !(capabilities_ & sensors::Capability))
+        return Error::not_supported;
+    if (!host_.sensor)
+        return Error::not_supported;
+    return host_.sensor(host_.context, request, reply);
+}
+Error Runtime::ipcCall(const IpcRequest &request, IpcReply &reply) {
+    if (loading_ || state() != State::active)
+        return Error::invalid_state;
+    if (!(component_.capabilities & CapComponentIpc) || !host_.ipc)
+        return Error::not_supported;
+    return host_.ipc(host_.context, request, reply);
+}
+Error Runtime::serviceCall(const ServiceRequest &request, ServiceInfo &reply) {
+    if (loading_ || state() != State::active)
+        return Error::invalid_state;
+    if (!host_.services)
+        return Error::not_supported;
+    if (request.operation != ServiceOperation::list && !inputDispatch_)
+        return Error::user_interaction_required;
+    return host_.services(host_.context, request, reply);
+}
 Error Runtime::postInput(InputEvent event) {
     if (event.generation != generation_)
         return Error::stale_handle;
@@ -441,7 +513,7 @@ Error Runtime::postInput(InputEvent event) {
     if (inputName(event.kind).empty())
         return Error::invalid_argument;
     if (event.kind >= InputKind::touch_down && event.kind <= InputKind::touch_cancel) {
-        if (!(capabilities_ & CapTouchEvents) || !(manifest_.capabilities & CapTouchEvents))
+        if (!(capabilities_ & CapTouchEvents) || !(component_.capabilities & CapTouchEvents))
             return Error::not_supported;
         if (event.x < -320 || event.x > 640 || event.y < -320 || event.y > 640 ||
             event.pointer > 15 || event.at > uint64_t(INT64_MAX))
@@ -455,7 +527,7 @@ Error Runtime::postInput(InputEvent event) {
         }
     }
     bool declared = false;
-    for (const auto &d : manifest_.permissions)
+    for (const auto &d : component_.permissions)
         if (d.permission == "input.focused" && d.scope.empty())
             declared = true;
     if (!declared)
@@ -488,7 +560,7 @@ Error Runtime::tick(uint64_t now) {
         else if (!focused_)
             continue;
         Error error;
-        if (manifest_.capabilities & CapAppApi) {
+        if (component_.capabilities & CapAppApi) {
             inputDispatch_ = input.kind == InputKind::touch_up || input.kind == InputKind::release;
             error = lua_.event(inputName(input.kind), input.value, &input);
             inputDispatch_ = false;
@@ -496,6 +568,31 @@ Error Runtime::tick(uint64_t now) {
             error = lua_.update(0, true);
         else
             continue;
+        if (error != Error::ok) {
+            stop();
+            return error;
+        }
+        changed |= lua_.visualChanged();
+    }
+    // Input, including touch_cancel, precedes sensor callbacks. Pull one coalesced event
+    // at a time so unsubscribe in a callback invalidates later deliveries in this tick.
+    for (size_t i = 0; host_.sensorEvent && i < sensors::MaxSubscriptions + sensors::MaxRefresh;
+        ++i) {
+        sensors::Event event;
+        if (!host_.sensorEvent(host_.context, event))
+            break;
+        const auto sensorError = lua_.sensorEvent(event);
+        if (sensorError != Error::ok) {
+            stop();
+            return sensorError;
+        }
+        changed |= lua_.visualChanged();
+    }
+    for (unsigned i = 0; host_.ipcEvent && i < 8; ++i) {
+        IpcEvent event;
+        if (!host_.ipcEvent(host_.context, event))
+            break;
+        const auto error = lua_.ipcEvent(event);
         if (error != Error::ok) {
             stop();
             return error;

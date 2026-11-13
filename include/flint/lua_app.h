@@ -15,13 +15,14 @@ struct LuaValue {
 };
 class LuaApp {
     friend class Runtime;
+    friend class ServiceRuntime;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     LuaDiagnostic diagnostic_{};
     Error finish(int status, std::string_view phase);
     void resumeClock(uint64_t now);
-    Error beginTick(uint64_t now);
-    void endTick();
+    Error loadImpl(std::string_view, uint32_t, uint32_t, FlintRender::Scene *, AppHost);
+    DispatchUsage lastUsage_{};
 
 public:
     LuaApp();
@@ -30,8 +31,15 @@ public:
     LuaApp &operator=(const LuaApp &) = delete;
     Error load(std::string_view source, uint32_t memory, uint32_t instructions,
         FlintRender::Scene &scene, AppHost host = {});
+    Error loadService(
+        std::string_view source, uint32_t memory, uint32_t instructions, AppHost host);
+    Error beginTick(uint64_t now, DispatchBudget budget = {});
+    void endTick();
+    DispatchUsage usage() const;
     Error update(uint32_t elapsedMs, bool pressed);
     Error event(std::string_view kind, int32_t value, const InputEvent *input = nullptr);
+    Error sensorEvent(const sensors::Event &event);
+    Error ipcEvent(const IpcEvent &event);
     Error tick(uint64_t now);
     uint64_t nextWake() const;
     bool visible(unsigned index) const;

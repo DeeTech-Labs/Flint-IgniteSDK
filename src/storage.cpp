@@ -226,8 +226,13 @@ Error PackageManager::begin() {
         auto path = root_ + "/" + ref;
         auto object = readText(path);
         Manifest current;
-        if (!objectName(object) || inspect(root_ + "/" + object, current) != Error::ok ||
-            current.id != id) {
+        const auto status =
+            objectName(object) ? inspect(root_ + "/" + object, current) : Error::invalid_package;
+        // A firmware contract/capability change is not evidence of storage corruption.
+        // Keep both references and objects for explicit package upgrade or firmware recovery.
+        if (status == Error::incompatible_contract || status == Error::not_supported)
+            continue;
+        if (status != Error::ok || current.id != id) {
             auto previous = readText(path + ".previous");
             Manifest backup;
             if (objectName(previous) && inspect(root_ + "/" + previous, backup) == Error::ok &&
@@ -366,7 +371,10 @@ Error PackageManager::locate(
         return Error::source_unavailable;
     const auto path = root_ + "/" + object;
     Manifest manifest;
-    if (inspectOpened(path, manifest, file, package) != Error::ok || manifest.id != id)
+    const auto error = inspectOpened(path, manifest, file, package);
+    if (error == Error::incompatible_contract || error == Error::not_supported)
+        return error;
+    if (error != Error::ok || manifest.id != id)
         return Error::source_unavailable;
     result = {std::move(manifest), path, false};
     return Error::ok;
@@ -577,8 +585,11 @@ Error PreparedInstall::advance(uint32_t budget) {
         const bool factory = state.phase == Phase::factory_package;
         error = state.auxiliaryValidation.advance(budget);
         if (error == Error::ok && state.auxiliaryValidation.done()) {
+            // Read-only factory identities remain protected even when this model disables
+            // optional background execution. This is metadata validation, never admission.
             error = state.auxiliaryApplication.begin(state.auxiliaryPackage,
-                state.auxiliaryManifest, state.available, state.capabilities);
+                state.auxiliaryManifest, state.available,
+                factory ? state.capabilities | CapBackground | CapComponentIpc : state.capabilities);
             state.phase = factory ? Phase::factory_application : Phase::current_application;
         }
         // A broken user reference may be repaired; a broken read-only factory

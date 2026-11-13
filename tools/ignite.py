@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import struct
@@ -81,6 +82,54 @@ def scenario_script(path):
             if type(step.get("enabled")) is not bool:
                 raise ValueError("permission enabled must be boolean")
             line = op + " " + name + " " + encoded(step.get("scope", "")) + " " + str(int(step["enabled"]))
+        elif op in ("service_start", "service_stop", "service_pause", "service_resume", "service_auto", "service_revoke", "expect_service"):
+            fields |= {"package", "component"}
+            package = step.get("package", "")
+            if type(package) is not str: raise ValueError("invalid service package")
+            if package: identifier(package)
+            component = step.get("component", "")
+            if type(component) is not str: raise ValueError("invalid service component")
+            component = identifier(component)
+            line = op + " " + encoded(package) + " " + encoded(component)
+            if op == "expect_service":
+                fields |= {"state", "reason"}
+                line += " " + integer(step.get("state"), 0, 4) + " " + integer(step.get("reason", 255), 0, 255)
+                if step.get("reason", 255) not in (*range(9), 255): raise ValueError("invalid service reason")
+            else:
+                fields |= {"expect"}
+                if op == "service_auto":
+                    fields |= {"enabled"}
+                    if type(step.get("enabled")) is not bool: raise ValueError("service autostart enabled must be boolean")
+                    line += " " + str(int(step["enabled"]))
+                line += " " + integer(step.get("expect", 0), 0, 16)
+        elif op == "low_energy":
+            fields |= {"enabled"}
+            if type(step.get("enabled")) is not bool: raise ValueError("low-energy simulation requires boolean")
+            line = op + " " + str(int(step["enabled"]))
+        elif op == "sensor_value":
+            fields |= {"source", "channel", "x", "y", "z"}
+            channels = ("temperature", "pressure", "humidity", "ambient_light", "acceleration", "angular_velocity")
+            channel = step.get("channel")
+            if isinstance(channel, str):
+                if channel not in channels: raise ValueError("invalid sensor channel")
+                channel = channels.index(channel)
+            channel_text = integer(channel, 0, 5)
+            components = [step.get("x"), step.get("y", 0), step.get("z", 0)]
+            for component in components:
+                if type(component) not in (int, float) or abs(component) > 1e12 or not math.isfinite(component):
+                    raise ValueError("sensor components must be finite and within +/-1e12")
+            if channel < 4 and (components[1] or components[2]):
+                raise ValueError("scalar sensor cannot have y/z components")
+            line = op + " " + integer(step.get("source"), 1, 65535) + " " + channel_text + " " + " ".join(format(v, ".17g") for v in components)
+        elif op == "sensor_state":
+            fields |= {"source", "status", "reason"}
+            status = integer(step.get("status"), 0, 5)
+            reason = integer(step.get("reason", 0 if status == "2" else 7), 0, 16)
+            if status == "2" and reason != "0": raise ValueError("valid sample must have success reason")
+            line = op + " " + integer(step.get("source"), 1, 65535) + " " + status + " " + reason
+        elif op == "sensor_reset":
+            fields |= {"source"}
+            line = op + " " + integer(step.get("source"), 1, 65535)
         else:
             raise ValueError("unknown scenario operation")
         if set(step) - fields:
@@ -123,9 +172,9 @@ def main(argv=None):
             project = {
                 "id": args.id, "name": "My watchface", "publisher": args.publisher,
                 "version": 1,
-                "budget": {"internal": 24576, "external": 0, "instructions": 4096},
-                "permissions": ["ui.render", "time.read"],
-                "components": [{"id": "main", "type": "watchface", "ui": [
+                "components": [{"id": "main", "type": "watchface",
+                    "budget": {"internal": 24576, "external": 0, "instructions": 4096},
+                    "capabilities": 1, "permissions": ["ui.render", "time.read"], "ui": [
                     {"kind": "rect", "w": 280, "h": 240, "color": "theme.background"},
                     {"kind": "text", "x": 140, "y": 120, "center": True,
                      "text": "${time.read}", "color": "theme.text"},
@@ -148,14 +197,18 @@ def main(argv=None):
             script = scenario_script(args.scenario) if args.scenario else None
             if args.scenario and args.image.resolve() == args.scenario.resolve():
                 raise ValueError("image must not overwrite scenario")
-            with tempfile.TemporaryDirectory(prefix="ignite-scenario-") as directory:
+            temporary_root = Path(__file__).resolve().parents[1] / "temp"
+            temporary_root.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="ignite-scenario-", dir=temporary_root) as directory:
                 command = [str(args.runner.resolve()), str(args.package.resolve()),
                     str(args.frames), str(args.press_every), str(args.image.resolve())]
                 if script is not None:
                     storage = args.storage.resolve() if args.storage else Path(directory) / "store"
                     factory = args.factory.resolve() if args.factory else Path(directory) / "factory"
                     command += ["--scenario", str(storage), str(factory)]
-                result = subprocess.run(command, input=script,
+                environment = os.environ.copy()
+                environment.update(TMPDIR=directory, TEMP=directory, TMP=directory)
+                result = subprocess.run(command, input=script, env=environment,
                     capture_output=True, text=True, encoding="utf-8")
             if result.returncode:
                 raise ValueError(result.stderr.strip() or "simulation failed")

@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory() as directory:
         except ValueError: pass
         else: raise AssertionError("malformed scenario accepted")
     for field, value in (("app_api", True), ("app_api", 2)):
-        invalid = copy.deepcopy(project); invalid[field] = value
+        invalid = copy.deepcopy(project); invalid["components"][0][field] = value
         try: compile_project(invalid, project_path.parent)
         except ValueError: pass
         else: raise AssertionError("invalid app API version accepted")

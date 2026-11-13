@@ -11,14 +11,55 @@ from compile_ignite import compile_project
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
-    project = {"id": "test.counter", "name": "Counter", "publisher": "tests", "version": 1,
-        "app_api": 1, "capabilities": 67, "budget": {"internal": 49152, "instructions": 4096},
-        "permissions": ["ui.render", "input.focused", "storage.private", "time.timer.create", "system.power.status", "ui.resources", "time.monotonic"],
-        "logic": {"language": "lua", "path": "main.lua"},
-        "components": [{"id": "main", "type": "app", "ui": [
-            {"kind": "rect", "w": 280, "h": 240},
-            {"kind": "rect", "id": "indicator", "w": 10, "h": 10},
-            {"kind": "text", "text": "counter=${app.counter};text=${app.text};save=${app.save};timer=${app.timer};power=${app.power};"}]}]}
+    project = {
+        'id': 'test.counter',
+        'name': 'Counter',
+        'publisher': 'tests',
+        'version': 1,
+        'components': [
+            {
+                'id': 'main',
+                'type': 'app',
+                'ui': [
+                    {
+                        'kind': 'rect',
+                        'w': 280,
+                        'h': 240
+                    },
+                    {
+                        'kind': 'rect',
+                        'id': 'indicator',
+                        'w': 10,
+                        'h': 10
+                    },
+                    {
+                        'kind': 'text',
+                        'text': 'counter=${app.counter};text=${app.text};save=${app.save};timer=${app.timer};power=${app.power};'
+                    }
+                ],
+                'capabilities': 67,
+                'app_api': 1,
+                'logic': {
+                    'language': 'lua',
+                    'path': 'main.lua'
+                },
+                'budget': {
+                    'internal': 49152,
+                    'instructions': 4096,
+                    'external': 0
+                },
+                'permissions': [
+                    'ui.render',
+                    'input.focused',
+                    'storage.private',
+                    'time.timer.create',
+                    'system.power.status',
+                    'ui.resources',
+                    'time.monotonic'
+                ]
+            }
+        ]
+    }
     project["resources"] = [{"id": i, "path": str(i) + ".bin"} for i in (100, 101, 102)]
     (root / "100.bin").write_bytes(struct.pack("<4sBBHHHIHB", b"FLIM", 2, 3, 1, 1, 0, 0, 65535, 255))
     (root / "101.bin").write_bytes(struct.pack("<4sBBHHHIHBHB", b"FLIM", 2, 3, 2, 1, 0, 0, 65535, 255, 0, 255))
@@ -53,11 +94,11 @@ end}
     project["components"][0]["ui"][2]["text"] = "denied=${app.denied};"
     # A capability bit, rather than a format/revision bump, gates these additive APIs.
     project["id"] = "test.denied"
-    project["permissions"] = ["ui.render"]
+    project["components"][0]["permissions"] = ["ui.render"]
 
     denied = package("denied", "local _,e=ignite.read('time.monotonic'); ignite.value('denied',e); return {update=function() end}")
     project["id"] = "test.fault"
-    project["permissions"] = ["ui.render", "input.focused"]
+    project["components"][0]["permissions"] = ["ui.render", "input.focused"]
     fault = package("fault", "ignite.log('before failure'); return {update=function() end,event=function() while true do end end}")
     legacy = json.loads((ROOT / "examples/flappy-bird/project.json").read_text())
     (root / "main.lua").write_bytes((ROOT / "examples/flappy-bird/main.lua").read_bytes())

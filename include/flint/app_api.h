@@ -1,5 +1,7 @@
 #pragma once
+#include "background.h"
 #include "contracts.h"
+#include "sensors.h"
 #include <algorithm>
 
 namespace flint {
@@ -116,10 +118,16 @@ enum class AppService : uint8_t {
     image,
     packages,
     navigate,
-    system_action
+    system_action,
+    beep,
+    brightness
 };
 inline constexpr std::string_view servicePermission(AppService service) {
     switch (service) {
+    case AppService::beep:
+        return "audio.play";
+    case AppService::brightness:
+        return "ui.brightness";
     case AppService::time:
         return "time.read";
     case AppService::monotonic:
@@ -171,6 +179,18 @@ struct AppHost {
     Error (*call)(void *, AppService, std::string_view, std::string_view, AppReply &){};
     uint64_t (*monotonic)(void *){};
     bool enabled{};
+    // Trusted Core bridges; never accept an application-selected principal.
+    Error (*authorize)(void *, std::string_view){};
+    Error (*sensor)(void *, const sensors::Request &, sensors::Reply &){};
+    bool (*sensorEvent)(void *, sensors::Event &){};
+    void (*cancelInstance)(void *){};
+    uint8_t outputs{}; // Declared narrow outputs: bit 0 beep, bit 1 temporary brightness.
+    ExecutionKind kind{ExecutionKind::foreground};
+    uint64_t (*microseconds)(void *){};
+    uint32_t minTimerMs{1};
+    Error (*ipc)(void *, const IpcRequest &, IpcReply &){};
+    bool (*ipcEvent)(void *, IpcEvent &){};
+    Error (*services)(void *, const ServiceRequest &, ServiceInfo &){};
 };
 struct LuaDiagnostic {
     Error error{Error::ok};

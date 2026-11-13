@@ -149,84 +149,174 @@ def atlas(path, size, chars):
 
 
 def compile_project(project, root):
-    allowed = {"id", "name", "publisher", "version", "budget", "permissions",
-               "components", "resources", "capabilities", "logic", "app_api", "icons"}
-    if set(project) - allowed:
+    allowed = {"id", "name", "publisher", "version", "components", "resources", "icons"}
+    if not isinstance(project, dict) or set(project) - allowed:
         raise ValueError("unknown project fields: " + ", ".join(sorted(set(project) - allowed)))
-    unsupported = {"logic", "javascript", "lua", "code", "script", "styles", "css"}
-    if (unsupported - {"logic"}).intersection(project):
-        raise ValueError("executable code and stylesheet compilation are not supported yet")
-    app_api = project.get("app_api", 0)
-    if type(app_api) is not int or app_api not in (0, 1):
-        raise ValueError("app_api must be 0 or 1")
-    if app_api and "logic" not in project:
-        raise ValueError("app_api requires Lua logic")
     identifier(project["id"])
     identifier(project["publisher"])
-    budget = project.get("budget", {})
-    permissions = project.get("permissions", [])
     components = project["components"]
-    if len(permissions) > 64 or not 1 <= len(components) <= 32:
-        raise ValueError("manifest budget exceeded")
+    if not isinstance(components, list) or not 1 <= len(components) <= 32:
+        raise ValueError("manifest component budget exceeded")
     name = project["name"]
-    if not name or len(name.encode()) > 96 or any(ord(c) < 32 or ord(c) == 127 for c in name):
-        raise ValueError("name too long")
-    manifest = bytearray(
-        b"FLM2" + text(project["id"]) + text(name) + text(project["publisher"])
-    )
-    manifest.extend(
-        struct.pack(
-            "<IIIIQ",
-            project.get("version", 1),
-            budget.get("internal", 24 * 1024),
-            budget.get("external", 0),
-            budget.get("instructions", 4096),
-            project.get("capabilities", 1) | (128 if app_api else 0),
-        )
-    )
-    manifest.extend(struct.pack("<H", len(permissions)))
-    for permission in permissions:
-        if isinstance(permission, str):
-            permission = {"id": permission, "scope": ""}
-        manifest.extend(text(permission["id"]) + text(permission.get("scope", "")))
-    manifest.extend(struct.pack("<H", len(components)))
-    sections = []
-    used = {1}
-    for index, component in enumerate(components):
-        if unsupported.intersection(component):
-            raise ValueError("executable code and stylesheet compilation are not supported yet")
-        section = component.get("section", index + 2)
-        if section in used:
-            raise ValueError("duplicate section")
-        used.add(section)
-        manifest.extend(
-            text(identifier(component["id"]))
-            + struct.pack(
-                "<HBI",
-                COMPONENTS[component["type"]],
-                ROLES[component.get("role", "none")],
-                section,
-            )
-        )
-        if "ui" in component:
-            if not app_api and any("id" in node for node in component["ui"]):
-                raise ValueError("UI node IDs require app_api=1")
-            kind = "ui"
-            data = scene(component["ui"])
-        elif "values" in component:
-            kind = "locale" if component["type"] == "locale" else "component"
-            values = component["values"]
-            data = struct.pack("<H", len(values)) + b"".join(
-                text(k) + text(v) for k, v in sorted(values.items())
-            )
-        else:
-            raise ValueError("component requires declarative UI or values")
-        sections.append((section, kind, data))
+    if not isinstance(name, str) or not name or len(name.encode()) > 96 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("invalid name")
+    def number(value, maximum=0xffffffff):
+        if type(value) is not int or not 0 <= value <= maximum:
+            raise ValueError("invalid unsigned integer")
+        return value
+    version = number(project.get("version", 1))
+    if not version:
+        raise ValueError("version must be positive")
+    manifest = bytearray(b"FLM3" + text(project["id"]) + text(name) + text(project["publisher"]))
+    manifest.extend(struct.pack("<IH", version, len(components)))
+    used, ids, prepared = {1}, set(), []
     for resource in project.get("resources", []):
-        section = resource["id"]
-        if section in used:
+        section = number(resource["id"])
+        if not section or section in used:
             raise ValueError("duplicate resource section")
         used.add(section)
+    services = 0
+    union = set()
+    for index, component in enumerate(components):
+        allowed_component = {"id", "type", "role", "section", "ui", "values", "logic", "budget", "capabilities", "permissions", "app_api", "sensor_api", "ipc_api"}
+        if not isinstance(component, dict) or set(component) - allowed_component:
+            raise ValueError("unknown component fields")
+        if not {"id", "type", "budget", "capabilities", "permissions"} <= set(component):
+            raise ValueError("component requires explicit budget, capabilities and permissions")
+        ident = identifier(component["id"])
+        if ident in ids:
+            raise ValueError("duplicate component ID")
+        ids.add(ident)
+        kind = COMPONENTS[component["type"]]
+        service = component["type"] == "service"
+        services += service
+        if services > 1:
+            raise ValueError("at most one service per package")
+        section = number(component.get("section", 0 if service else index + 2))
+        if service:
+            if section or "ui" in component or "values" in component or component.get("role", "none") != "none":
+                raise ValueError("service cannot contain UI or declarative resources")
+        else:
+            if not section or section in used:
+                raise ValueError("duplicate component section")
+            used.add(section)
+        budget = component["budget"]
+        if not isinstance(budget, dict) or set(budget) != {"internal", "external", "instructions"}:
+            raise ValueError("component budget requires internal, external and instructions")
+        budgets = tuple(number(budget[key]) for key in ("internal", "external", "instructions"))
+        caps = number(component["capabilities"], 0xffffffffffffffff)
+        flags = {}
+        for flag in ("app_api", "sensor_api", "ipc_api"):
+            value = component.get(flag, 0)
+            if type(value) is not int or value not in (0, 1):
+                raise ValueError(flag + " must be 0 or 1")
+            flags[flag] = value
+        if service:
+            flags["app_api"] = 1
+            caps |= 16384 | 64 | 128
+        if (flags["sensor_api"] or flags["ipc_api"]) and not flags["app_api"]:
+            raise ValueError("sensor_api and ipc_api require app_api")
+        caps |= (128 if flags["app_api"] else 0) | (8192 if flags["sensor_api"] else 0) | (32768 if flags["ipc_api"] else 0)
+        if not isinstance(component["permissions"], list):
+            raise ValueError("permissions must be a list")
+        if "ui" in component and "values" in component:
+            raise ValueError("component cannot contain both UI and values")
+        declarations = []
+        for permission in component["permissions"]:
+            if isinstance(permission, str): permission = {"id": permission, "scope": ""}
+            if not isinstance(permission, dict) or set(permission) - {"id", "scope"} or "id" not in permission:
+                raise ValueError("invalid permission declaration")
+            permission_id, scope = identifier(permission["id"]), permission.get("scope", "")
+            if not isinstance(scope, str) or len(scope.encode()) > 192 or "\0" in scope:
+                raise ValueError("invalid permission scope")
+            if service and (permission_id.startswith("ui.") or permission_id == "input.focused"):
+                raise ValueError("service cannot declare UI permissions")
+            declaration = (permission_id, scope)
+            if declaration in declarations:
+                raise ValueError("duplicate permission declaration")
+            declarations.append(declaration)
+        if len(declarations) > 64:
+            raise ValueError("permission budget exceeded")
+        union.update(declarations)
+        if len(union) > 64:
+            raise ValueError("package permission budget exceeded")
+        if service and ("app.background.execute", "") not in declarations:
+            raise ValueError("service requires app.background.execute")
+        if ("app.background.autostart", "") in declarations and (not service or ("app.background.execute", "") not in declarations):
+            raise ValueError("autostart requires service execution permission")
+        if service and "logic" not in component:
+            raise ValueError("service requires Lua logic")
+        if flags["app_api"] and "logic" not in component:
+            raise ValueError("app_api requires Lua logic")
+        prepared.append((component, section, budgets, caps, declarations, flags))
+    for component, *_ in prepared:
+        logic = component.get("logic")
+        if isinstance(logic, dict) and "section" in logic:
+            logic_id = number(logic["section"])
+            if not logic_id or logic_id in used:
+                raise ValueError("duplicate logic section")
+            used.add(logic_id)
+    sections = []
+    for component, section, budgets, caps, declarations, flags in prepared:
+        logic_section = 0
+        if "logic" in component:
+            logic = component["logic"]
+            if (not isinstance(logic, dict) or not {"language", "path"} <= set(logic)
+                    or set(logic) - {"language", "path", "includes", "section"} or logic["language"] != "lua"):
+                raise ValueError("logic requires language=lua and path")
+            if component["type"] not in ("app", "watchface", "service"):
+                raise ValueError("Lua requires app, watchface or service component")
+            if not caps & 64:
+                raise ValueError("Lua requires capability 64")
+            if not 48*1024 <= budgets[0] <= 144*1024 or not 1 <= budgets[2] <= 100000:
+                raise ValueError("quota_exceeded: invalid Lua budget")
+            logic_section = number(logic.get("section", max(used) + 1))
+            if "section" not in logic:
+                if not logic_section or logic_section in used:
+                    raise ValueError("duplicate logic section")
+                used.add(logic_section)
+            includes = logic.get("includes", [])
+            if not isinstance(includes, list) or len(includes) > 8 or any(not isinstance(path, str) or not path for path in includes):
+                raise ValueError("logic includes must be up to eight source paths")
+            parts = []
+            for source in [*includes, logic["path"]]:
+                if not isinstance(source, str) or not source:
+                    raise ValueError("invalid logic path")
+                path = (root / source).resolve()
+                if not path.is_relative_to(root.resolve()):
+                    raise ValueError("logic escapes project")
+                if path.stat().st_size > 16384:
+                    raise ValueError("Lua source exceeds 16384 bytes")
+                parts.append(path.read_text(encoding="utf-8"))
+            data = "\n".join(parts).encode("utf-8")
+            if not data or len(data) > 16384 or data.startswith(b"\x1b") or b"\0" in data:
+                raise ValueError("Lua requires text source of 1..16384 bytes")
+            if flags["app_api"] and component["type"] != "service":
+                names = {}
+                for index, node in enumerate(component.get("ui", []), 1):
+                    if "id" in node:
+                        name = node["id"]
+                        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) or name in names:
+                            raise ValueError("UI IDs must be unique names of 1..32 lowercase ASCII characters")
+                        names[name] = index
+                data = ("local ui={" + ",".join('["' + k + '"]=' + str(v) for k, v in sorted(names.items())) + "}; ").encode("ascii") + data
+                if len(data) > 16384:
+                    raise ValueError("Lua source including UI names exceeds 16384 bytes")
+            sections.append((logic_section, "lua", data))
+        manifest.extend(text(component["id"]) + struct.pack("<HBIIIIIQH", COMPONENTS[component["type"]], ROLES[component.get("role", "none")], section, logic_section, *budgets, caps, len(declarations)))
+        for permission_id, scope in sorted(declarations): manifest.extend(text(permission_id) + text(scope))
+        if component["type"] == "service":
+            continue
+        if "ui" in component:
+            if not flags["app_api"] and any("id" in node for node in component["ui"]):
+                raise ValueError("UI node IDs require app_api=1")
+            sections.append((section, "ui", scene(component["ui"])))
+        elif "values" in component:
+            values = component["values"]
+            sections.append((section, "locale" if component["type"] == "locale" else "component", struct.pack("<H", len(values)) + b"".join(text(k) + text(v) for k, v in sorted(values.items()))))
+        else: raise ValueError("component requires declarative UI or values")
+    for resource in project.get("resources", []):
+        section = resource["id"]
         path = (root / resource["path"]).resolve()
         if not path.is_relative_to(root.resolve()):
             raise ValueError("resource escapes project")
@@ -261,50 +351,6 @@ def compile_project(project, root):
                     or (fmt == 2 and any(i >= count for i in resource[16+count*3:]))):
                 raise ValueError("invalid FLIM icon data")
         manifest.extend(struct.pack("<I", ident))
-    if "logic" in project:
-        logic = project["logic"]
-        if (not isinstance(logic, dict) or not {"language", "path"} <= set(logic)
-                or set(logic) - {"language", "path", "includes"}
-                or logic["language"] != "lua"):
-            raise ValueError("logic requires language=lua and path")
-        if len(components) != 1 or components[0]["type"] not in ("app", "watchface"):
-            raise ValueError("Lua requires exactly one app or watchface component")
-        if budget.get("internal", 24 * 1024) < 48 * 1024:
-            raise ValueError("Lua requires at least 48 KiB declared internal memory")
-        if not project.get("capabilities", 1) & 64:
-            raise ValueError("Lua requires capability 64")
-        includes = logic.get("includes", [])
-        if (not isinstance(includes, list) or len(includes) > 8
-                or any(not isinstance(path, str) or not path for path in includes)):
-            raise ValueError("logic includes must be up to eight source paths")
-        parts = []
-        for source in [*includes, logic["path"]]:
-            path = (root / source).resolve()
-            if not path.is_relative_to(root.resolve()):
-                raise ValueError("logic escapes project")
-            if path.stat().st_size > 16384:
-                raise ValueError("Lua source exceeds 16384 bytes")
-            parts.append(path.read_text(encoding="utf-8"))
-        data = "\n".join(parts).encode("utf-8")
-        if not data or len(data) > 16384 or data.startswith(b"\x1b") or b"\0" in data:
-            raise ValueError("Lua requires text source of 1..16384 bytes")
-        data.decode("utf-8")
-        if app_api:
-            names = {}
-            for index, node in enumerate(components[0].get("ui", []), 1):
-                if "id" in node:
-                    name = node["id"]
-                    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) or name in names:
-                        raise ValueError("UI IDs must be unique names of 1..32 lowercase ASCII characters")
-                    names[name] = index
-            # A lexical table: no new binary format, no executable metadata in firmware.
-            prefix = "local ui={" + ",".join('["' + k + '"]=' + str(v) for k, v in sorted(names.items())) + "}; "
-            data = prefix.encode("ascii") + data
-            if len(data) > 16384:
-                raise ValueError("Lua source including UI names exceeds 16384 bytes")
-        elif any("id" in node for node in components[0].get("ui", [])):
-            raise ValueError("UI node IDs require app_api=1")
-        sections.append((max(used) + 1, "lua", data))
     return build([(1, "manifest", bytes(manifest)), *sections])
 
 

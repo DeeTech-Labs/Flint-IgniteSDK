@@ -1,3 +1,4 @@
+#include "core_background_state.h"
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -30,13 +31,6 @@ static Values valuesRead(const std::string &path) {
     }
     return r.done() ? values : Values{};
 }
-static uint64_t identity(std::string_view text) {
-    Sha256 hash;
-    hash.update({reinterpret_cast<const uint8_t *>(text.data()), text.size()});
-    auto digest = hash.finish();
-    Reader r{digest};
-    return r.n(8);
-}
 static uint64_t generation(const Installed &p) {
     File file;
     if (!file.open(p.path))
@@ -47,24 +41,89 @@ static uint64_t generation(const Installed &p) {
     Reader r{std::span(h).subspan(32)};
     return r.n(8);
 }
+static Platform normalizePlatform(Platform platform) {
+#ifdef FLINT_ENABLE_LUA
+    if (platform.background.maxServices && platform.microseconds)
+        platform.capabilities |= CapBackground | CapComponentIpc;
+    else
+#endif
+        platform.capabilities &= ~(CapBackground | CapComponentIpc);
+    return platform;
+}
 Core::Core(std::string root, std::string factory, Platform platform)
-    : platform_(std::move(platform)),
+    : platform_(normalizePlatform(std::move(platform))),
       packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities,
           platform_.require_factory, platform_.rename_open_files) {
-    runtime_.host({this,
-        [](void *context, AppService service, std::string_view key, std::string_view value,
-            AppReply &reply) {
-            return static_cast<Core *>(context)->appCall(service, key, value, reply);
+    foregroundBinding_ = {this, {1, 1}, 0, false, false};
+    runtime_.host(instanceHost(foregroundBinding_));
+    sensors_.attach(platform_.sensors);
+    sensors_.authorization(
+        [](void *context, InstanceKey owner, sensors::Mask channels) {
+            auto &core = *static_cast<Core *>(context);
+            auto *host = core.binding(owner);
+            if (!host)
+                return Error::permission_denied;
+            for (unsigned i = 0; i < 6; ++i)
+                if (channels & (1u << i)) {
+                    const auto result =
+                        core.authorize(*host, sensors::permission(sensors::Channel(i)));
+                    if (result != Error::ok)
+                        return result;
+                }
+            return Error::ok;
         },
-        [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); }, true});
+        this);
     runtime_.resources().profilingClock(platform_.microseconds);
     runtime_.availableMemory(platform_.available_memory);
 }
-Error Core::appCall(
-    AppService service, std::string_view key, std::string_view value, AppReply &reply) {
+Error Core::appCall(HostBinding &host, AppService service, std::string_view key,
+    std::string_view value, AppReply &reply) {
     // Runtime has checked the canonical declaration; this bridge never accepts app-supplied
     // identity.
-    const auto &manifest = runtime_.manifest();
+    const auto execution = caller(host);
+    if (!execution.manifest || host.closing)
+        return Error::invalid_state;
+    const auto &manifest = *execution.manifest;
+    if (execution.service) {
+        if (service != AppService::time && service != AppService::monotonic &&
+            service != AppService::beep && service != AppService::timer)
+            return Error::not_supported;
+        const auto allowed = authorize(host, servicePermission(service));
+        if (allowed != Error::ok)
+            return allowed;
+        if (service == AppService::beep && authorize(host, "audio.background") != Error::ok)
+            return Error::permission_denied;
+    }
+    if (service == AppService::beep || service == AppService::brightness) {
+        unsigned first{}, second{};
+        const auto a = std::from_chars(key.data(), key.data() + key.size(), first);
+        const auto b = std::from_chars(value.data(), value.data() + value.size(), second);
+        if (a.ec != std::errc{} || a.ptr != key.data() + key.size() || b.ec != std::errc{} ||
+            b.ptr != value.data() + value.size())
+            return Error::invalid_argument;
+        if (service == AppService::beep) {
+            if (!platform_.beep)
+                return Error::not_supported;
+            if (first < 100 || first > 10000 || !second || second > 5000)
+                return Error::invalid_argument;
+            return platform_.beep(first, second);
+        }
+        if (!platform_.brightness_apply)
+            return Error::not_supported;
+        if (first < 5 || first > 100 || !second || second > 5000)
+            return Error::invalid_argument;
+        const auto error = authorizeApp("ui.brightness");
+        if (error != Error::ok)
+            return error;
+        const auto at = platform_.monotonic();
+        if (at > UINT64_MAX - second)
+            return Error::invalid_argument;
+        brightnessOverride_ = first;
+        brightnessUntil_ = at + second;
+        brightnessOwner_ = runtime_.consumerGeneration();
+        systemNext_ = 0;
+        return Error::ok;
+    }
     if (service == AppService::packages) {
         if (key == "revision") {
             reply.numeric = true;
@@ -217,7 +276,14 @@ uint64_t Core::nextWake() const {
     const auto at = platform_.monotonic();
     if (install_ || operationDirty_ || (edge_ && edge_->dirty) || !events_.empty())
         return at;
-    auto next = std::min({runtime_.nextWake(), nextEpochSave_, startupUntil_, operationUntil_});
+    auto next = std::min({runtime_.nextWake(), sensors_.nextWake(foregroundBinding_.key),
+        backgroundNextWake(), systemNext_, nextEpochSave_, startupUntil_, operationUntil_});
+    // Backend conversion/sampling deadlines must wake an otherwise idle Core. Do not use
+    // Broker's combined wake here: a throttled service's pending event must wait for tokens.
+    if (platform_.sensors)
+        next = std::min(next, platform_.sensors->nextWake());
+    if (sensorDiagnostic_.session)
+        next = std::min(next, sensorDiagnostic_.expires);
     if (edge_ && edge_->settling)
         next = std::min(next, edge_->nextFrame);
     if (boundProvider_ && boundAt_ <= UINT64_MAX - CompanionTtlMs)
@@ -232,9 +298,10 @@ uint64_t Core::nextWake() const {
     return next;
 }
 Error Core::persistSettings() {
-    return writeAtomic(packages_.root() + "/settings.bin", valuesBytes(settings_))
-        ? Error::ok
-        : Error::io_error;
+    const auto bytes = valuesBytes(settings_);
+    if (settings_.size() > 128 || bytes.size() > 8192)
+        return Error::resource_exhausted;
+    return writeAtomic(packages_.root() + "/settings.bin", bytes) ? Error::ok : Error::io_error;
 }
 Error Core::persistGrants() {
     Writer w;
@@ -255,7 +322,6 @@ Error Core::persistGrants() {
     return writeAtomic(packages_.root() + "/grants.bin", w.data) ? Error::ok : Error::io_error;
 }
 Error Core::revokePackage(std::string_view id) {
-    const auto previous = grants_;
     bool changed = false;
     for (auto &grant : grants_) {
         if (grant.package == id && grant.enabled) {
@@ -264,9 +330,9 @@ Error Core::revokePackage(std::string_view id) {
         }
     }
     const auto result = changed ? persistGrants() : Error::ok;
-    if (result != Error::ok) {
-        grants_ = previous;
-    }
+    if (runtime_.manifest().id == id)
+        sensors_.cancelOwner(foregroundBinding_.key);
+    stopPackageServices(id, ServiceReason::update);
     companion_.valid = false;
     return result;
 }
@@ -301,6 +367,8 @@ Error Core::begin() {
     auto error = packages_.begin();
     if (error != Error::ok)
         return error;
+    if (const auto sensorsError = sensors_.begin(); sensorsError != Error::ok)
+        return sensorsError;
     base_ = platform_.monotonic();
     settings_ = valuesRead(packages_.root() + "/settings.bin");
     if (!settings_.contains("utc_offset")) {
@@ -324,7 +392,7 @@ Error Core::begin() {
         if (tail && !*tail && value >= 1700000000 && value <= 4102444800ULL)
             epoch_ = value;
     }
-    if (epoch_ && base_ <= UINT64_MAX - 60000)
+    if (!platform_.rtc_read && epoch_ && base_ <= UINT64_MAX - 60000)
         nextEpochSave_ = base_ + 60000;
     auto data = readText(packages_.root() + "/grants.bin", 16384);
     Reader r{{reinterpret_cast<const uint8_t *>(data.data()), data.size()}};
@@ -346,8 +414,13 @@ Error Core::begin() {
         if (!r.done())
             grants_.clear();
     }
+    if (platform_.mute_apply)
+        muteError_ = platform_.mute_apply(
+            settings_.contains("audio_muted") && settings_.at("audio_muted") == "1");
+    systemTick(platform_.monotonic());
     activateRole(Role::theme);
     activateRole(Role::locale);
+    backgroundBegin();
     if (platform_.power_on) {
         // A splash must not mask the absence of a usable clock during initial recovery checks.
         error = activateRole(Role::clock);
@@ -449,41 +522,7 @@ Error Core::launch(std::string_view id, std::string_view component) {
     return result;
 }
 bool Core::canReceiveMetrics(uint64_t providerSession) {
-    const auto &m = runtime_.manifest();
-    bool declared = false;
-    for (auto &d : m.permissions)
-        if (d.permission == "companion.pc.metrics" && d.scope == "cpu,ram")
-            declared = true;
-    if (!declared)
-        return false;
-    if (metricRuntime_ != runtime_.generation() || metricCatalog_ != packages_.revision()) {
-        metricRuntime_ = runtime_.generation();
-        metricCatalog_ = packages_.revision();
-        Installed installed;
-        metricIdentityValid_ = packages_.locate(m.id, installed) == Error::ok;
-        if (metricIdentityValid_) {
-            metricPrincipal_ = {identity(m.id), identity(m.publisher), generation(installed)};
-            metricIdentityValid_ = metricPrincipal_.generation != 0 &&
-                metricPrincipal_.generation == runtime_.packageIdentity() &&
-                installed.manifest.publisher == m.publisher;
-            metricFactory_ = installed.factory;
-        }
-    }
-    if (!metricIdentityValid_ || runtime_.state() != State::active)
-        return false;
-    Call call{metricPrincipal_, "cpu,ram", platform_.monotonic(), providerSession, 0,
-        platform_.capabilities, true, true, metricFactory_};
-    // Recheck live grants without allocating a temporary collection or caching a decision.
-    const auto &spec = *permission("companion.pc.metrics");
-    for (const auto &g : grants_) {
-        if (g.package != m.id)
-            continue;
-        Grant grant{{metricPrincipal_.app, metricPrincipal_.publisher, g.generation}, g.permission,
-            g.scope, g.expires, g.session, g.action, g.enabled};
-        if (authorize(spec, call, std::span(&grant, 1)) == Error::ok)
-            return true;
-    }
-    return false;
+    return authorizeApp("companion.pc.metrics", "cpu,ram", providerSession) == Error::ok;
 }
 void Core::refreshCompanionDemand() {
     const auto at = platform_.monotonic();
@@ -497,7 +536,7 @@ void Core::refreshCompanionDemand() {
     }
     bool declared = false;
     if (runtime_.state() == State::active)
-        for (const auto &permission : runtime_.manifest().permissions)
+        for (const auto &permission : runtime_.component().permissions)
             declared |=
                 permission.permission == "companion.pc.metrics" && permission.scope == "cpu,ram";
     const auto state = !declared ? CompanionDemand::no_consumer
@@ -665,11 +704,16 @@ bool Core::tick() {
     if (!install_)
         checkpointEpoch();
     advanceInstall();
+    sensorOwner();
+    systemTick(platform_.monotonic());
+    if (sensorDiagnostic_.session && platform_.monotonic() >= sensorDiagnostic_.expires)
+        stopSensorDiagnostic();
+    sensors_.maintain(platform_.monotonic());
     refreshCompanionDemand();
     const auto at = platform_.monotonic();
     bool logicDirty = false;
     if (runtime_.scripted() && notifiedCatalog_ != packages_.revision()) {
-        for (const auto &permission : runtime_.manifest().permissions)
+        for (const auto &permission : runtime_.component().permissions)
             if (permission.permission == "packages.list") {
                 if (runtime_.postInput({InputKind::catalog_changed, 0, runtime_.generation()}) ==
                     Error::ok)
@@ -689,7 +733,9 @@ bool Core::tick() {
             logicDirty = true;
         }
     }
-    if (runtime_.scripted() && runtime_.state() == State::active && runtime_.nextWake() <= at) {
+    if (runtime_.scripted() && runtime_.state() == State::active &&
+        (runtime_.nextWake() <= at || sensors_.nextWake(foregroundBinding_.key) <= at ||
+            foregroundEventsPending())) {
         // Failure is handled by the same factory recovery path as render errors.
         const auto selected = settings_.find("role1");
         const std::string_view selection =
@@ -726,6 +772,7 @@ bool Core::tick() {
         applyUiAction();
         logicDirty = true;
     }
+    backgroundTick(platform_.monotonic());
     const auto minute = now() / 60;
     if (minute != renderedMinute_) {
         renderedMinute_ = minute;
@@ -792,8 +839,8 @@ const Values &Core::bindings() {
         values["locale:" + key] = value;
     for (auto &[key, value] : settings_)
         values["settings:" + key] = value;
-    const auto &m = runtime_.manifest();
-    const bool needsPackages = std::any_of(m.permissions.begin(), m.permissions.end(),
+    const bool needsPackages = std::any_of(runtime_.component().permissions.begin(),
+        runtime_.component().permissions.end(),
         [](const Declaration &d) { return d.permission == "packages.list"; });
     if (needsPackages && launcherCatalog_ != packages_.revision()) {
         launcher_.clear();
@@ -827,7 +874,7 @@ const Values &Core::bindings() {
             : key == "time.date"                          ? "time.read"
                                                           : key;
         bool declared = false;
-        for (auto &declaration : m.permissions)
+        for (auto &declaration : runtime_.component().permissions)
             if (declaration.permission == required)
                 declared = true;
         if (!declared)
@@ -939,6 +986,8 @@ void Core::paint(const FlintRender::Scene &scene, FlintRender::Canvas &canvas) {
     FlintRender::resourceImage = nullptr;
 }
 void Core::disconnect(Session &session) {
+    if (sensorDiagnostic_.session == session.id)
+        stopSensorDiagnostic();
     if (operationOwner_ == session.id && presentation_ && !notice_ &&
         (operationPhase_ == OperationPhase::receiving ||
             operationPhase_ == OperationPhase::verifying) &&
@@ -1171,6 +1220,14 @@ Frame Core::handle(const Frame &request, Session &session) {
         case Method::companion_sample:
             error = handleCompanion(request.method, in, session);
             break;
+        case Method::services:
+        case Method::service_control:
+            error = handleBackground(request.method, in, out, session);
+            break;
+        case Method::sensor_catalog:
+        case Method::sensor_diagnostic:
+            error = handleSensor(request.method, in, out, session);
+            break;
         case Method::diagnostics: {
             if (!in.done()) {
                 fail(Error::invalid_argument);
@@ -1179,6 +1236,10 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto values = platform_.diagnostics ? platform_.diagnostics() : Values{};
             values["last_ble_policy_error"] = std::to_string(uint16_t(lastBlePolicyError_));
             values["last_logic_error"] = std::to_string(uint16_t(lastLogicError_));
+            values["sensor_broker_bytes"] = std::to_string(sizeof(sensors::Broker));
+            values["mute_apply_error"] = std::to_string(uint16_t(muteError_));
+            values["brightness_apply_error"] = std::to_string(uint16_t(brightnessError_));
+            values["sensor_sources"] = std::to_string(sensors_.catalog().size());
             values["runtime_resident_bytes"] = std::to_string(sizeof(Runtime));
             values["runtime_native_heap_estimate"] = std::to_string(runtime_.nativeHeapEstimate());
             values["runtime_native_peak_estimate"] = std::to_string(runtime_.nativePeakEstimate());
@@ -1224,7 +1285,9 @@ Frame Core::handle(const Frame &request, Session &session) {
                 values["logic_message"] = diagnostic.message.data();
                 values["logic_instructions"] = std::to_string(diagnostic.instructions);
                 values["logic_fault_peak_bytes"] = std::to_string(diagnostic.peak);
-                for (size_t i = 0; i < diagnostic.logCount; ++i)
+                for (size_t i = 0; sensorDiagnostic_.session == session.id &&
+                    platform_.monotonic() < sensorDiagnostic_.expires && i < diagnostic.logCount;
+                    ++i)
                     values["logic_log_" + std::to_string(i)] = diagnostic.log[i].data();
             }
             // Fault details must remain readable even with many adapter counters.
@@ -1492,10 +1555,23 @@ Frame Core::handle(const Frame &request, Session &session) {
             }
             break;
         }
+        case Method::time_status:
+            if (!in.done()) {
+                error = Error::invalid_argument;
+                break;
+            }
+            out.n(now(), 8);
+            out.n(rtcState_, 1);
+            out.n(uint16_t(rtcError_), 2);
+            break;
         case Method::time_set: {
             auto epoch = in.n(8);
             if (!in.done() || epoch < 1700000000 || epoch > 4102444800ULL) {
                 fail(Error::invalid_argument);
+                break;
+            }
+            if (rtcState_ == 1) {
+                error = Error::invalid_state;
                 break;
             }
             auto previous = epoch_;
@@ -1513,7 +1589,15 @@ Frame Core::handle(const Frame &request, Session &session) {
                 ++epochWrites_;
                 epochFailures_ = 0;
                 lastSave_ = base_;
-                nextEpochSave_ = base_ > UINT64_MAX - 60000 ? UINT64_MAX : base_ + 60000;
+                trustedTimeSet_ = true;
+                nextEpochSave_ =
+                    platform_.rtc_read || base_ > UINT64_MAX - 60000 ? UINT64_MAX : base_ + 60000;
+                if (platform_.rtc_set) {
+                    rtcError_ = platform_.rtc_set(epoch, rtcToken_);
+                    rtcState_ = rtcError_ == Error::ok ? 1 : 3;
+                    rtcDeadline_ = base_ > UINT64_MAX - 5000 ? UINT64_MAX : base_ + 5000;
+                    systemNext_ = 0;
+                }
             }
             break;
         }
@@ -1530,14 +1614,31 @@ Frame Core::handle(const Frame &request, Session &session) {
         case Method::settings_get: {
             if (!in.done())
                 fail(Error::invalid_argument);
-            else
-                out.raw(valuesBytes(settings_));
+            else {
+                auto values = settings_;
+                values["brightness_supported"] = platform_.brightness_apply ? "1" : "0";
+                values["mute_supported"] = platform_.mute_apply ? "1" : "0";
+                if (!values.contains("brightness_mode"))
+                    values["brightness_mode"] = "manual";
+                if (!values.contains("brightness_manual"))
+                    values["brightness_manual"] = "100";
+                if (!values.contains("brightness_fallback"))
+                    values["brightness_fallback"] = "50";
+                if (!values.contains("audio_muted"))
+                    values["audio_muted"] = "0";
+                out.raw(valuesBytes(values));
+            }
             break;
         }
         case Method::settings_set: {
             auto key = in.text(64), value = in.text(192);
             if (!in.done()) {
                 fail(Error::invalid_argument);
+                break;
+            }
+            if (key == "brightness_mode" || key == "brightness_manual" ||
+                key == "brightness_fallback" || key == "audio_muted") {
+                error = systemSetting(key, value);
                 break;
             }
             if (key == "reduce_motion") {
@@ -1662,9 +1763,13 @@ Frame Core::handle(const Frame &request, Session &session) {
             *it = {id, name, scope, generation(p), 0,
                 spec->access == Access::session ? session.id : 0, 0, enabled};
             error = persistGrants();
-            if (error != Error::ok)
+            if (error != Error::ok && enabled)
                 grants_ = std::move(old);
-            else
+            // Failed durable revocation still blocks access in RAM. It must never look saved.
+            sensorOwner();
+            sensors_.maintain(platform_.monotonic());
+            reconcileServices();
+            if (error == Error::ok)
                 notice(enabled ? "access_allowed" : "access_revoked", p.manifest.name, name, scope);
             break;
         }
@@ -1698,6 +1803,9 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto component = runtime_.component().id;
             if (active)
                 runtime_.stop();
+            error = revokePackage(id);
+            if (error != Error::ok)
+                break;
             icons_.clear();
             error = packages_.rollback(id);
             if (active) {
@@ -1756,10 +1864,12 @@ Frame Core::handle(const Frame &request, Session &session) {
     if (error == Error::ok && request.method != Method::scene && request.method != Method::info &&
         request.method != Method::packages && request.method != Method::package_read &&
         request.method != Method::permissions_get && request.method != Method::settings_get &&
-        request.method != Method::diagnostics && request.method != Method::companion_subscribe &&
-        request.method != Method::companion_bind && request.method != Method::hello &&
-        request.method != Method::install_chunk && request.method != Method::install_begin &&
-        request.method != Method::session_close) {
+        request.method != Method::diagnostics && request.method != Method::sensor_catalog &&
+        request.method != Method::sensor_diagnostic && request.method != Method::services &&
+        request.method != Method::service_control && request.method != Method::time_status &&
+        request.method != Method::companion_subscribe && request.method != Method::companion_bind &&
+        request.method != Method::hello && request.method != Method::install_chunk &&
+        request.method != Method::install_begin && request.method != Method::session_close) {
         bindingsDirty_ = true;
         events_.post({4, 0, runtime_.generation()});
     }

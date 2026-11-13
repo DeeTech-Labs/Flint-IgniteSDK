@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory() as directory:
     (root / "main.lua").write_bytes((ROOT / "examples/flappy-bird/main.lua").read_bytes())
     (root / "game.ignit").write_bytes(compile_project(project,root))
     (root / "main.lua").write_text("return {update=function(dt) if dt>0 then while true do end end end}")
-    project["permissions"] = ["ui.render"]
+    project["components"][0]["permissions"] = ["ui.render"]
     (root / "fault.ignit").write_bytes(compile_project(project,root))
     (root / "main.lua").write_text("return {update=function() ignite.set(2,'x',10); ignite.value('score',7) end}")
     (root / "quiet.ignit").write_bytes(compile_project(project,root))

@@ -2,7 +2,7 @@
 
 [English](../en/FLIM.md)
 
-Контракт `0x20261112`: принимаются только FLIM v2 и manifest FLM2. Старых декодеров нет; все пакеты, factory и примеры пересобираются. Устройство читает подготовленный FLIM, не PNG/SVG. Несжатое хранение обеспечивает прямой доступ к строкам; масштабирование выполняется на компьютере.
+Контракт `0x20261114`: принимаются только FLIM v2 и manifest FLM3. Старых декодеров нет; все пакеты, factory и примеры пересобираются. Устройство читает подготовленный FLIM, не PNG/SVG. Несжатое хранение обеспечивает прямой доступ к строкам; масштабирование выполняется на компьютере.
 
 ## Формат
 
@@ -32,17 +32,19 @@ Alpha непредумноженная: A4 преобразуется как `n�
 
 ## Проект и manifest
 
-Иконка приложения имеет фиксированные 48×48 пикселей: две колонки по124px на canvas280×240, ячейка94px с шагом100px, подпись под иконкой. Устройство не масштабирует иконки. Поле проекта:
+Иконка приложения имеет фиксированные 48×48 пикселей: две колонки по124px на canvas280×240, ячейка94px с шагом100px, подпись под иконкой. Устройство не масштабирует иконки. Ниже фрагмент полей проекта; PNG берутся из examples/icons/. Полный собираемый проект — [examples/icons](../../examples/icons/project.json). Варианты light/dark добавляйте только вместе с ресурсами соответствующих ID:
 
 ```json
-"icons": {"main": 100, "mask": 101, "light": 102, "dark": 103},
+{
+"icons": {"main": 100, "mask": 101},
 "resources": [
-  {"id": 100, "path": "icon.png", "format": "image", "representation": "INDEX8", "size": [48, 48]},
+  {"id": 100, "path": "main.png", "format": "image", "representation": "INDEX8", "size": [48, 48]},
   {"id": 101, "path": "mask.png", "format": "image", "representation": "A4", "mask": "alpha", "size": [48, 48]}
 ]
+}
 ```
 
-`main` обязателен, если присутствует любой вариант. `main/light/dark` — INDEX8 или RGB565+A8, `mask` — A4. Поле `icons` можно полностью опустить. В FLM2 после последнего component всегда следуют четыре u32 ID в порядке main, mask, light, dark; 0 означает отсутствие. Ссылки должны указывать на resource-секции. Формат остальных полей manifest сохраняется. Компилятор проверяет подготовленные иконки; native manifest проверяет ссылки, а содержимое изображения безопасно проверяется при использовании. Повреждённая иконка не делает приложение неисполняемым. Ошибка SHA-256 всего пакета по-прежнему блокирует установку.
+`main` обязателен, если присутствует любой вариант. `main/light/dark` — INDEX8 или RGB565+A8, `mask` — A4. Поле `icons` можно полностью опустить. В FLM3 после последнего component всегда следуют четыре u32 ID в порядке main, mask, light, dark; 0 означает отсутствие. Ссылки должны указывать на resource-секции. Остальные поля FLM3 изменены на per-component declarations/budgets и explicit logicSection; package envelope version остаётся 1. См. [миграцию](BACKGROUND-SERVICES.md). Компилятор проверяет подготовленные иконки; native manifest проверяет ссылки, а содержимое изображения безопасно проверяется при использовании. Повреждённая иконка не делает приложение неисполняемым. Ошибка SHA-256 всего пакета по-прежнему блокирует установку.
 
 Тема задаёт `appearance=light|dark` (по умолчанию light), `icons=normal|themed` (по умолчанию normal), RGB565 `accent`, `surface`, `pressed`, `muted`, `background`, `text`. В normal выбирается light/dark при наличии, иначе main. В themed — mask при наличии, иначе main, без выбора light/dark. Недоступный, повреждённый или неверного размера/представления выбранный ресурс заменяется системной плиткой. A4 окрашивается `theme.accent`. Инверсии цветных изображений нет.
 
@@ -51,7 +53,7 @@ Alpha непредумноженная: A4 преобразуется как `n�
 ## Конвертер
 
 ```sh
-python tools/flim.py icon.png icon.flim --representation INDEX8 --size 48 48 --colors 256 --preview quantized.png
+python tools/flim.py examples/icons/main.png build/docs-sdk/icon.flim --representation INDEX8 --size 48 48 --colors 256 --preview build/docs-sdk/quantized.png
 python tools/flim.py mask.png mask.flim --representation A4 --mask alpha --size 48 48
 python tools/compile_ignite.py examples/icons/project.json icons.ignit
 ```
@@ -77,7 +79,7 @@ python tools/compile_ignite.py examples/icons/project.json icons.ignit
 Воспроизводимый host benchmark:
 
 ```sh
-python tools/benchmark_icons.py build/flim_tests.exe build/icon-bench
+python tools/benchmark_icons.py build/docs-sdk/Debug/flim_tests.exe build/icon-bench
 ```
 
 Он создаёт monitor, сглаженное кольцо и RGBA gradient, каждый в трёх представлениях. `validate_us` включает open/header/palette и все строки; `draw_us` включает open/header/palette и полный draw48×48, по200 итераций. Это время файловых чтений host с тёплым OS-cache, без поиска приложения, проверки всего пакета и SPI. Результаты конкретного прогона фиксируются в отчёте задачи. `sizeof` объектов даёт размер C++-состояния, не полный peak heap. Время, пик heap, Flash/RAM сборки и качество на физическом ESP32-S3 проверяются отдельно; host benchmark их не устанавливает.
@@ -87,3 +89,5 @@ python tools/benchmark_icons.py build/flim_tests.exe build/icon-bench
 Derived resourceRevision включает поколение кэша: каталог, режим темы и ошибки чтения. Core синхронизирует его до dirty comparison; при отказе тёплого ресурса после clipped redraw запрашивает следующий полный кадр.
 
 После операции ResourceManager/Runtime закрывают borrowed Source декодера до уничтожения локального View/read-context. Scratch остаётся общим; последующее validate без нового open возвращает invalid_state.
+
+[FLM3 component declarations и миграция SDK](BACKGROUND-SERVICES.md); изменения manifest не меняют кодек FLIM v2.

@@ -1,0 +1,43 @@
+{
+    "id": "demo.sensors",
+    "name": "Sensor temperature",
+    "publisher": "demo",
+    "version": 1,
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "w": 280,
+                    "h": 240
+                },
+                {
+                    "kind": "text",
+                    "x": 12,
+                    "y": 30,
+                    "text": "temperature=${app.temperature};error=${app.error};drops=${app.drops};"
+                }
+            ],
+            "app_api": 1,
+            "sensor_api": 1,
+            "capabilities": 65,
+            "budget": {
+                "internal": 49152,
+                "instructions": 4096,
+                "external": 0
+            },
+            "permissions": [
+                "ui.render",
+                "input.focused",
+                "time.timer.create",
+                "sensors.temperature"
+            ],
+            "logic": {
+                "language": "lua",
+                "path": "main.lua"
+            }
+        }
+    ]
+}

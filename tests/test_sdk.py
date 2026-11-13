@@ -68,7 +68,7 @@ class SDKTests(unittest.TestCase):
     def test_failed_build_preserves_output(self):
         self.compile()
         previous = self.output.read_bytes()
-        self.project["permissions"] = ["unknown.permission"]
+        self.project["components"][0]["permissions"] = ["unknown.permission"]
         self.compile(success=False)
         self.assertEqual(previous, self.output.read_bytes())
 
@@ -78,7 +78,7 @@ class SDKTests(unittest.TestCase):
         self.assertIn("permission_denied", self.compile(success=False).stderr)
 
     def test_missing_resource(self):
-        self.project["permissions"].append("ui.resources")
+        self.project["components"][0]["permissions"].append("ui.resources")
         self.project["components"][0]["ui"].append(
             {"kind": "image", "resource": 100, "w": 1, "h": 1})
         self.assertIn("invalid_package", self.compile(success=False).stderr)
@@ -88,7 +88,7 @@ class SDKTests(unittest.TestCase):
         self.compile(success=False)
 
     def test_budget_rejected(self):
-        self.project["budget"] = {"internal": 1}
+        self.project["components"][0]["budget"] = {"internal": 1, "external": 0, "instructions": 4096}
         self.assertIn("quota_exceeded", self.compile(success=False).stderr)
 
     def test_code_and_styles_not_silently_discarded(self):
@@ -112,10 +112,52 @@ class SDKTests(unittest.TestCase):
         self.cli("build", self.source, self.output, "--validator", self.root / "missing", success=False)
         self.assertFalse(self.output.exists())
 
+    def test_component_manifest_service_envelope_and_local_declarations(self):
+        (self.root / "main.lua").write_text("return {update=function() end}")
+        (self.root / "service.lua").write_text("return {event=function() end}")
+        self.project = {
+            "id": "test.components", "name": "Components", "publisher": "tests", "version": 1,
+            "components": [
+                {"id": "main", "type": "app", "app_api": 1, "capabilities": 65,
+                 "budget": {"internal": 49152, "external": 0, "instructions": 4096},
+                 "permissions": ["ui.render"], "logic": {"language": "lua", "path": "main.lua"},
+                 "ui": [{"kind": "rect", "w": 280, "h": 240}]},
+                {"id": "worker", "type": "service", "capabilities": 64,
+                 "budget": {"internal": 98304, "external": 1024, "instructions": 12000},
+                 "permissions": ["storage.private", "app.background.execute"],
+                 "logic": {"language": "lua", "path": "service.lua"}},
+            ]}
+        if WITHOUT_LUA:
+            self.compile(success=False)
+            return
+        report = json.loads(self.compile().stdout)
+        self.assertEqual(report["declared_budget"], {"internal_bytes": 98304, "external_bytes": 1024, "instructions": 12000})
+        self.assertTrue(report["required_capabilities"] & 16384)
+        # The service never declares ui.render; union grants must not become its local rights.
+        self.assertNotIn("ui.render", self.project["components"][1]["permissions"])
+        for root_field, value in (("budget", {}), ("permissions", []), ("capabilities", 1), ("logic", {}), ("app_api", 1)):
+            self.project[root_field] = value
+            self.compile(success=False)
+            del self.project[root_field]
+        service = self.project["components"][1]
+        service["permissions"].append("ui.render")
+        self.compile(success=False)
+        service["permissions"].pop()
+        service["permissions"].remove("app.background.execute")
+        self.compile(success=False)
+        service["permissions"].append("app.background.execute")
+        service["logic"]["section"] = 20
+        self.project["components"][0]["logic"]["section"] = 20
+        self.compile(success=False)
+        del self.project["components"][0]["logic"]["section"]
+        del service["logic"]["section"]
+        self.project["components"].append(dict(service, id="second"))
+        self.compile(success=False)
+
     def test_all_factory_projects(self):
         for source in (ROOT / "system").glob("*.json"):
             with self.subTest(source=source.name):
-                requires_lua = "logic" in json.loads(source.read_text(encoding="utf-8"))
+                requires_lua = any("logic" in c for c in json.loads(source.read_text(encoding="utf-8"))["components"])
                 if WITHOUT_LUA and requires_lua:
                     result = self.cli("build", source, self.output, "--validator", VALIDATOR, success=False)
                     self.assertIn("not_supported", result.stderr)

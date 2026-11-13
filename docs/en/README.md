@@ -32,10 +32,10 @@ Run from the SDK repository root:
 python3 -m pip install Pillow
 python3 tools/generate_registry.py
 python3 tools/build_system.py
-cmake -S . -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/flint-platform
-ctest --test-dir /tmp/flint-platform --output-on-failure
-python3 tools/compile_ignite.py examples/pc-monitor/project.json /tmp/pc-monitor.ignit
+cmake -S . -B build/docs-sdk -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/docs-sdk --config Debug
+ctest --test-dir build/docs-sdk --output-on-failure -C Debug
+python3 tools/compile_ignite.py examples/pc-monitor/project.json build/pc-monitor.ignit
 ```
 
 [Standalone installation, Lua and pinned consumers](SDK.md). [Architecture, formats, security and limits](ARCHITECTURE.md). [PC Monitor example](PC-MONITOR.md).
@@ -48,12 +48,16 @@ The [community exception](COMMUNITY-EXCEPTION.md) permits hobby devices at docum
 
 ## Current limits
 
-Lua 5.4.9 is the only application language. The bounded Runtime works in host builds, the simulator and the validated Spark firmware configuration. Executable background services are unsupported. Host tests do not establish device memory headroom, hardware reliability or battery life.
+Lua 5.4.9 is the only application language. The bounded Runtime works in host builds, the simulator and the validated Spark firmware configuration. Background services run in isolated VMs with explicit grants and bounded model admission; physical resource acceptance is separate. Host tests do not establish device memory headroom, hardware reliability or battery life.
 
 Maintained sources use four spaces without tabs, following `.editorconfig` and `.clang-format`. Generated font data is not manually reformatted.
 
 
 ## Documentation
+
+[Audience index](INDEX.md) · [First application](APP-QUICKSTART.md) · [Contributing](CONTRIBUTING.md).
+
+[Audience index](INDEX.md) · [First application](APP-QUICKSTART.md) · [Contributing](CONTRIBUTING.md).
 
 [Guides and licensing](LICENSING.md).
 

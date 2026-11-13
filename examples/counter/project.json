@@ -3,15 +3,58 @@
     "name": "Persistent Counter",
     "publisher": "deetech",
     "version": 1,
-    "app_api": 1,
-    "capabilities": 65,
-    "budget": {"internal": 49152, "external": 0, "instructions": 4096},
-    "permissions": ["ui.render", "input.focused", "storage.private", "time.timer.create"],
-    "logic": {"language": "lua", "path": "main.lua"},
-    "components": [{"id": "main", "type": "app", "ui": [
-        {"kind": "rect", "w": 280, "h": 240, "color": "#102030"},
-        {"kind": "rect", "id": "indicator", "x": 16, "y": 20, "w": 8, "h": 8, "color": "#40b080"},
-        {"kind": "text", "x": 16, "y": 70, "text": "Count: ${app.count}", "color": "#ffffff"},
-        {"kind": "text", "x": 16, "y": 110, "text": "${app.status}", "color": "#ffffff"}
-    ]}]
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "w": 280,
+                    "h": 240,
+                    "color": "#102030"
+                },
+                {
+                    "kind": "rect",
+                    "id": "indicator",
+                    "x": 16,
+                    "y": 20,
+                    "w": 8,
+                    "h": 8,
+                    "color": "#40b080"
+                },
+                {
+                    "kind": "text",
+                    "x": 16,
+                    "y": 70,
+                    "text": "Count: ${app.count}",
+                    "color": "#ffffff"
+                },
+                {
+                    "kind": "text",
+                    "x": 16,
+                    "y": 110,
+                    "text": "${app.status}",
+                    "color": "#ffffff"
+                }
+            ],
+            "app_api": 1,
+            "capabilities": 65,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "permissions": [
+                "ui.render",
+                "input.focused",
+                "storage.private",
+                "time.timer.create"
+            ],
+            "logic": {
+                "language": "lua",
+                "path": "main.lua"
+            }
+        }
+    ]
 }

@@ -26,7 +26,7 @@ The 64-byte container header contains: magic `FLIGNIT\0` at 0; u16 format versio
 
 Index entries are 24 bytes: u32 ID, u16 section type, u16 codec, u32 offset, u32 length, u32 flags, u32 reserved. IDs increase strictly, sections do not overlap and the final section ends at EOF. Exactly one section is a manifest. Supported sections are manifest=1, component=2, resource=3, UI=4, Lua=5, locale=6, signature=7. Codec, flags and reserved must be zero. Package size is bounded to 1 MiB, section count to 1024 and manifest size to 4096 bytes. These are parser/security limits, not fixed installation slots.
 
-The manifest starts with `FLM2`, followed by u16-length UTF-8 strings for ID/name/publisher; u32 package version; three u32 memory/instruction budgets; u64 required capabilities; u16 permission count with permission/scope string pairs; u16 component count with ID string, u16 type, u8 role and u32 section ID. Four u32 main/mask/light/dark icon IDs follow components (0 means absent). Permission count is bounded to 64 and components to 32. IDs are restricted identifiers and can never contain path traversal. Unknown permissions are rejected.
+The manifest starts with `FLM3`, followed by u16-length UTF-8 ID/name/publisher, u32 package version and u16 component count. Each record contains component ID, type:u16, role:u8, section:u32, logicSection:u32, three budget:u32 values, capabilities:u64, permission count:u16 and permission/scope pairs. Four u32 main/mask/light/dark icon IDs follow components (0 means absent). Limits are 32 components and 64 distinct permission/scope pairs in the package union. Services have section=0 and a separate Lua section, without UI/input declarations; at most one service per package. Runtime checks each caller component budget/declaration rather than inheriting the union. FLM2 is rejected; envelope version remains 1.
 
 Compiled UI supports rectangles, rounded rectangles, lines, text, small masks and indexed RGB565 images. Text bindings expose only declared APIs. Own resource access requires `ui.resources`. Fonts use indexed FLGF glyph atlases with bounded scratch storage; images use [FLIM v2](FLIM.md): A4, INDEX8 RGB565/A8 and RGB565+A8. The compiler performs TTF/PNG conversion on the computer. Nothing on the watch parses TTF, SVG, YAML or source JSON.
 
@@ -38,7 +38,7 @@ Runtime parses `${...}` at launch: an unclosed substitution returns `invalid_pac
 
 `PackageManager::revision()` invalidates catalog caches after `begin()` and successful commit/remove/rollback. The launcher grid indexes the catalog with six recycled cells; full manifests are not retained. Metrics identity is cached per Runtime generation and catalog revision and checked against the loaded package; declarations, capabilities, application state and live grants are checked on every access. Files changed outside PackageManager require reinitialization through `begin()` and restarting the affected application. SHA-256 still does not authenticate publishers.
 
-Nominal versions and Companion framing are retained; ContractRevision is now 0x20261112, manifests use FLM2, images use FLIM v2 and scenes support CatalogIcon. Rebuild all packages. C++ object sizes (including `Op`, `Runtime`, `Core`) changed, and `Values` now uses a transparent comparator (`std::less<>`); rebuild SDK and consumers of its headers together. Custom renderer integrations should set `resourceMetrics` alongside `resourceGlyph` to avoid reading bitmaps during measurement. The added caches are bounded; memory capacity and latency on a specific board still require separate validation.
+Nominal versions and Companion framing are retained; ContractRevision is now 0x20261114, manifests use FLM3, images use FLIM v2 and scenes support CatalogIcon. Rebuild all packages. C++ object sizes (including `Op`, `Runtime`, `Core`) changed, and `Values` now uses a transparent comparator (`std::less<>`); rebuild SDK and consumers of its headers together. Custom renderer integrations should set `resourceMetrics` alongside `resourceGlyph` to avoid reading bitmaps during measurement. The added caches are bounded; memory capacity and latency on a specific board still require separate validation.
 
 ## Storage and recovery
 
@@ -70,16 +70,16 @@ The handshake carries protocol, development revision, build ID and required capa
 python3 -m pip install Pillow
 python3 tools/generate_registry.py
 python3 tools/build_system.py
-cmake -S . -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/flint-platform
-ctest --test-dir /tmp/flint-platform --output-on-failure
+cmake -S . -B build/docs-sdk -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/docs-sdk --config Debug
+ctest --test-dir build/docs-sdk --output-on-failure -C Debug
 ```
 
 Build an application without changing or flashing OS source:
 
 ```sh
 python3 tools/compile_ignite.py \
-    examples/pc-monitor/project.json /tmp/pc-monitor.ignit
+    examples/pc-monitor/project.json build/pc-monitor.ignit
 ```
 
 Integration tests exercise resume, duplicate chunks, integrity failures, updates, rollback, factory protection, permission checks and revocation, custom fonts/images, stale handles, repeated switching and framing. Flare's offline smoke test loads the actual QML interface and simulator. Physical device tests are excluded.
@@ -89,8 +89,7 @@ Use four spaces, no tabs, in maintained source. `.editorconfig` and `.clang-form
 ## Explicit remaining limits
 
 Lua 5.4.9 is the only application scripting engine. Its bounded prototype runs on
-host builds, the shared simulator and the validated Spark firmware configuration. Executable background services are not
-supported. Registry entries for future permissions do not imply implemented APIs.
+host builds, the shared simulator and Spark firmware (physical validation is revision-specific). Isolated background services run in the same Core owner loop under a bounded model pool; see [lifecycle, IPC, quotas and migration](BACKGROUND-SERVICES.md). Registry entries for future permissions do not imply implemented APIs.
 
 The development unit was identified as 4 MiB Flash and 2 MiB PSRAM. Firmware owns the partition layout with two application slots, a factory volume and writable storage. PSRAM is optional; the renderer prefers it when available and stages DMA rows in internal memory. Real memory headroom, wiring, BLE behavior, flash/power-loss behavior and battery life still require device validation. No battery-life or on-device reliability claim follows from host tests.
 
@@ -218,3 +217,7 @@ Operations displays actual received/verified bytes, publication without an inven
 Status reports application failure and clock recovery, durably changed access, and the code/BLE address of pending pairing. Application, permission and scope are separate; long fields are shortened, with full details in Flare. Touch buttons dismiss/return; pending pairing can be rejected. Existing Flare dialogs still confirm pairing, permissions and dangerous remote actions. Presentation itself grants no access. Firmware recovery remains independent of Core, packages and framebuffer.
 
 Host checks `touch_navigation` and `system_ui` replay startup, edge swipes, cancellation/reversal, regrabs, a second pointer, scrolling, settings, reduced motion, transfers, cancellation after full receipt, corrupt packages/Lua and pairing. Previews use the real SDK rasterizer. Physical readability, touch drivers, frame timing, SPI and power require hardware validation. Consumers compiling Core sources explicitly must add `src/core_ui.cpp` and `src/core_touch.cpp` alongside the current SDK resource sources.
+
+Hardware readings use the bounded Sensor Broker in the same Core; Runtime authorizes persistent services through trusted Core. See [Sensors](SENSORS.md) for the typed API, lifecycle and migration contract.
+
+[FLM3 components and background services](BACKGROUND-SERVICES.md): separate VMs, instance-bound authorization, one authoritative Sensor Broker and one fixed CPU pool shared by services; foreground has its own budget.

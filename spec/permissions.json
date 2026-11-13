@@ -24,7 +24,6 @@
         "storage.settings",
         "haptics.feedback",
         "audio.play",
-        "sensors.ambient_light",
         "network.status",
         "bluetooth.status",
         "companion.pc.status",
@@ -32,7 +31,8 @@
         "events.subscribe",
         "app.lifecycle",
         "resources.read",
-        "packages.list"
+        "packages.list",
+        "app.ipc"
     ],
     "persistent": [
         "time.timer.persistent",
@@ -52,6 +52,10 @@
         "haptics.background",
         "audio.background",
         "sensors.motion",
+        "sensors.ambient_light",
+        "sensors.temperature",
+        "sensors.pressure",
+        "sensors.humidity",
         "sensors.steps",
         "sensors.heart_rate",
         "sensors.spo2",
@@ -76,7 +80,9 @@
         "companion.pc.audio.status",
         "companion.pc.network.stats",
         "companion.pc.storage.stats",
-        "companion.pc.games.status"
+        "companion.pc.games.status",
+        "app.background.execute",
+        "app.background.autostart"
     ],
     "session": [
         "ui.brightness",

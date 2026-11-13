@@ -16,15 +16,42 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run([sys.argv[1], str(root / 'store'), str(factory), sys.argv[2]], check=True)
 
     payload = {
-        'id': 'test.ui-payload', 'name': 'Test application', 'publisher': 'tests', 'version': 1,
-        'permissions': [{'id': 'companion.pc.metrics', 'scope': 'cpu,ram'}, 'ui.render'],
-        'components': [{'id': 'main', 'type': 'app', 'ui': [
-            {'kind': 'rect', 'w': 280, 'h': 240, 'color': '#000000'}]}],
+        'id': 'test.ui-payload',
+        'name': 'Test application',
+        'publisher': 'tests',
+        'version': 1,
+        'components': [
+            {
+                'id': 'main',
+                'type': 'app',
+                'ui': [
+                    {
+                        'kind': 'rect',
+                        'w': 280,
+                        'h': 240,
+                        'color': '#000000'
+                    }
+                ],
+                'permissions': [
+                    {
+                        'id': 'companion.pc.metrics',
+                        'scope': 'cpu,ram'
+                    },
+                    'ui.render'
+                ],
+                'budget': {
+                    'internal': 24576,
+                    'external': 0,
+                    'instructions': 4096
+                },
+                'capabilities': 1
+            }
+        ]
     }
     (root / 'payload.ignit').write_bytes(compile_project(payload, root))
     fault = json.loads((ROOT / 'examples/counter/project.json').read_text(encoding='utf-8'))
     fault['id'] = 'test.ui-fault'
-    fault['permissions'] = ['ui.render']
+    fault["components"][0]["permissions"] = ['ui.render']
     (root / 'main.lua').write_text('return {update=function(dt) if dt>0 then while true do end end end}')
     (root / 'fault.ignit').write_bytes(compile_project(fault, root))
     subprocess.run([sys.argv[3], str(root), str(factory),
@@ -33,10 +60,31 @@ with tempfile.TemporaryDirectory() as directory:
     # Exercise maximal UTF-8 names and a catalogue larger than the visible four rows.
     for index, name in enumerate(('Ш' * 48, 'W' * 96, '時計' * 16, '🕐' * 24, 'A')):
         project = {
-            'id': f'a.stress-{index}', 'name': name, 'publisher': 'tests', 'version': 1,
-            'permissions': ['ui.render'],
-            'components': [{'id': 'main', 'type': 'app', 'ui': [
-                {'kind': 'rect', 'w': 280, 'h': 240, 'color': '#000000'}]}],
+            'id': f'a.stress-{index}',
+            'name': name,
+            'publisher': 'tests',
+            'version': 1,
+            'components': [
+                {
+                    'id': 'main',
+                    'type': 'app',
+                    'ui': [
+                        {
+                            'kind': 'rect',
+                            'w': 280,
+                            'h': 240,
+                            'color': '#000000'
+                        }
+                    ],
+                    'permissions': ['ui.render'],
+                    'budget': {
+                        'internal': 24576,
+                        'external': 0,
+                        'instructions': 4096
+                    },
+                    'capabilities': 1
+                }
+            ]
         }
         (factory / f'stress-{index}.ignit').write_bytes(compile_project(project, root))
     subprocess.run([sys.argv[1], str(root / 'stress-store'), str(factory),
