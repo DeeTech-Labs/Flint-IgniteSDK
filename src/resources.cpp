@@ -121,7 +121,7 @@ void ResourceManager::textBounds(FlintRender::Op &op, const uint8_t *text, size_
     }
     // Only on-screen ink matters. Clamp far-off font bearings before narrowing;
     // scene coordinates are bounded to [-320,640] and screens to 320 pixels.
-    const int shift = op.extra ? advance / 2 : 0;
+    const int shift = (op.extra & FlintRender::TextCentered) ? advance / 2 : 0;
     left = std::clamp(left - shift, -1024, 1024);
     right = std::clamp(right - shift, -1024, 1024);
     top = std::clamp(top, -1024, 1024);

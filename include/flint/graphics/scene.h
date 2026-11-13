@@ -7,8 +7,17 @@
 namespace FlintRender {
 constexpr int MaxOps = 32, MaxData = 512, HeaderSize = 10, OpSize = 18;
 constexpr size_t MaxEncoded = HeaderSize + MaxOps * OpSize + MaxData;
-enum Kind : uint8_t { Rect = 1, Rounded = 2, Line = 3, Text = 4, Bitmap = 5, ResourceImage = 6, CatalogIcon = 7 };
+enum Kind : uint8_t {
+    Rect = 1,
+    Rounded = 2,
+    Line = 3,
+    Text = 4,
+    Bitmap = 5,
+    ResourceImage = 6,
+    CatalogIcon = 7
+};
 enum Font : uint8_t { Body = 0, TimeLarge = 1, TimeCompact = 2, Brand = 3 };
+enum TextFlags : uint16_t { TextCentered = 1, TextWrap = 2, TextEllipsis = 4, TextBox = 8 };
 struct Op {
     uint8_t kind = 0, font = 0;
     int16_t x = 0, y = 0, w = 0, h = 0;
@@ -119,8 +128,16 @@ inline bool decode(const uint8_t *bytes, size_t size, Scene &s) {
             return false;
         if (op.kind == CatalogIcon && (op.length || op.w != 48 || op.h != 48))
             return false;
-        if (op.kind == Text && (op.length > 192 || op.extra > 1))
-            return false;
+        if (op.kind == Text) {
+            if (op.length > 192 || (op.extra & ~uint16_t(15)) ||
+                ((op.extra & TextWrap) && (op.extra & TextEllipsis)))
+                return false;
+            if (op.extra & TextBox) {
+                if (!op.w || !op.h)
+                    return false;
+            } else if (op.extra & (TextWrap | TextEllipsis))
+                return false;
+        }
     }
     if (!next.count || next.ops[0].kind != Rect || next.ops[0].x || next.ops[0].y ||
         next.ops[0].w != next.width || next.ops[0].h != next.height)

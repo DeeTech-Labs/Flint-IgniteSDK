@@ -57,7 +57,7 @@ class DocumentationTests(unittest.TestCase):
         (self.root/'include/flint').mkdir(parents=True)
         (self.root/'spec/services.json').write_text('{"services": []}')
         (self.root/'spec/permissions.json').write_text('{"version":1,"persistent":["sensors.temperature"]}')
-        (self.root/'include/flint/contracts.h').write_text('ContractRevision = 0x20261114; enum class Error {\n ok,\n conflict\n};')
+        (self.root/'include/flint/contracts.h').write_text('ContractRevision = 0x20261115; enum class Error {\n ok,\n conflict\n};')
         self.assertEqual(docs.check_registry(self.root,write=True),[])
         self.assertEqual(docs.check_registry(self.root),[])
         (self.root/'spec/permissions.json').write_text('{"version":1,"persistent":[]}')

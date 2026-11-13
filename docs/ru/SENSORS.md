@@ -2,7 +2,7 @@
 
 # Датчики и системная периферия
 
-Контракт разработки `0x20261114`; номинальные версии package/API/Companion остаются 1: framing, header и index контейнера не менялись, manifest теперь FLM3 с per-component logic/budgets/declarations. Изменились permissions и появились новые методы. Старые пакеты/peers отклоняются по ContractRevision. Пересоберите все свои пакеты. Не удаляйте partitions, settings, private storage или grants для обновления. Существующий grants.bin сохраняет формат; ambient_light больше не automatic и требует явного persistent grant. Publisher — metadata, а не доказательство подписи.
+Контракт разработки `0x20261115`; номинальные версии package/API/Companion остаются 1: framing, header и index контейнера не менялись, manifest теперь FLM3 с per-component logic/budgets/declarations. Изменились permissions и появились новые методы. Старые пакеты/peers отклоняются по ContractRevision. Пересоберите все свои пакеты. Не удаляйте partitions, settings, private storage или grants для обновления. Существующий grants.bin сохраняет формат; ambient_light больше не automatic и требует явного persistent grant. Publisher — metadata, а не доказательство подписи.
 
 Канонический каталог логических каналов: `spec/sensors.json`; генератор выпускает `flint/sensor_registry.h`. `temperature` — Celsius, `pressure` — Pa, `humidity` — %, `ambient_light` — lux, `acceleration` — m/s², `angular_velocity` — rad/s. Имена микросхем, I2C и GPIO не являются API приложений. Source.id стабилен в пределах модели. Автовыбор source=0: наименьший priority, затем source_id; неисправный основной источник не вызывает скрытого переключения на другой. Маска нескольких каналов выбирает один источник, поддерживающий всю маску.
 

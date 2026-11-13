@@ -6,6 +6,7 @@ The format follows Keep a Changelog.
 ## [Unreleased]
 
 ### Fixed
+- Keep long thermometer values and system presentation text in explicit regions. Add optional `overflow` text boxes (`clip`, `wrap`, `ellipsis`); free positioning remains unchanged. Breaking development contract `0x20261115` requires rebuilding packages, factory, OS and Flare together without erasing user data. See [text layout](docs/en/UI-LAYOUT.md).
 - Convert fractional thermometer readings to text before publishing UI values; the executable documentation scenario now exercises UI delivery and permission revocation.
 - Label shared thermometer values as last-known readings, so stopping its collector cannot leave a false freshness claim in the UI.
 - Release service resources on pause/resume callback faults, persist the crash autostart latch, preserve unrelated owners on package removal, and retain sensor conversion deadlines without busy polling deferred service events.
@@ -27,7 +28,7 @@ The format follows Keep a Changelog.
 
 ### Changed
 - Add canonical RU/EN audience routes, first-app/service walkthroughs, implemented Lua/registry references, contributor checks and source-verified user/recovery guides.
-- Breaking development contract `0x20261114` and FLM3 manifests: move logic, budgets and permissions into components and rebuild all packages/consumers. Package envelope and nominal API/Companion versions remain 1; incompatible installed objects/references are retained. See [background-service migration](docs/en/BACKGROUND-SERVICES.md).
+- Breaking development contract `0x20261115` and FLM3 manifests: move logic, budgets and permissions into components and rebuild all packages/consumers. Package envelope and nominal API/Companion versions remain 1; incompatible installed objects/references are retained. See [background-service migration](docs/en/BACKGROUND-SERVICES.md).
 - Ambient-light access requires persistent consent; temperature, pressure and humidity use persistent permissions. Foreground and services share one Sensor Broker with owner-bound handles. FLIM v2 is unchanged.
 - Render alpha against the RGB565 canvas using bounded scratch storage without decoded-image caches or an additional framebuffer.
 - Keep build outputs under `build/` and temporary artifacts under `temp/`.

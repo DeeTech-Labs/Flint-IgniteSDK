@@ -2,7 +2,7 @@
 
 # Sensors and hardware integration
 
-Development contract0x20261114 rejects older packages and peers. Nominal API/package-envelope/protocol versions remain1; framing and the container header/index are unchanged, while the manifest is FLM3 with per-component logic, budgets and declarations. Rebuild all owned packages; do not erase partitions, grants, settings or private data. grants.bin layout remains unchanged. ambient_light is now persistent and needs explicit consent. Publisher metadata is not signature provenance.
+Development contract0x20261115 rejects older packages and peers. Nominal API/package-envelope/protocol versions remain1; framing and the container header/index are unchanged, while the manifest is FLM3 with per-component logic, budgets and declarations. Rebuild all owned packages; do not erase partitions, grants, settings or private data. grants.bin layout remains unchanged. ambient_light is now persistent and needs explicit consent. Publisher metadata is not signature provenance.
 
 `spec/sensors.json` generates sensor_registry.h: temperature(Celsius),pressure(Pa),humidity(%),ambient_light(lux),acceleration(m/s²),angular_velocity(rad/s). Channel mask bits0..5 use that order. Source0 deterministically selects lowest priority then source_id among sources supporting the entire mask; failure does not silently change primary source.
 

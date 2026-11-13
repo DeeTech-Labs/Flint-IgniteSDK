@@ -13,9 +13,23 @@ spec = importlib.util.spec_from_file_location(
 )
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
+sys.path.insert(0, str(ROOT / "tools"))
+from compile_ignite import scene
 
 
 class BuilderTests(unittest.TestCase):
+    def test_opt_in_text_boxes(self):
+        background = {"kind": "rect", "w": 280, "h": 240}
+        for mode, flags in (("clip", 8), ("wrap", 10), ("ellipsis", 12)):
+            data = scene([background, {"kind":"text", "text":"Датчики unavailable", "x":10,
+                          "y":20,"w":200,"h":60,"overflow":mode,"center":True}])
+            self.assertEqual(struct.unpack_from(">H",data,10+18+16)[0], flags|1)
+        free = scene([background,{"kind":"text","text":"free","center":True}])
+        self.assertEqual(struct.unpack_from(">H",free,10+18+16)[0],1)
+        for mode, width, height in (("wrap",0,50),("wrap",50,0),("unknown",50,50)):
+            with self.assertRaises(ValueError):
+                scene([background,{"kind":"text","w":width,"h":height,"overflow":mode}])
+
     def test_size_limits(self):
         self.assertTrue(builder.build([(1, "manifest", b"x" * 4096)]))
         with self.assertRaisesRegex(ValueError, "manifest"):
