@@ -2,7 +2,7 @@
 
 [Canonical Russian specification](../ru/FLIM.md)
 
-Development revision `0x20261114` accepts FLM3 manifests and FLIM v2 only. Rebuild all packages and consumers; no legacy decoder is provided. PNG/SVG conversion, sizing and quantization run on the host.
+Development revision `0x20261115` accepts FLM3 manifests and FLIM v2 only. Rebuild all packages and consumers; no legacy decoder is provided. PNG/SVG conversion, sizing and quantization run on the host.
 
 All integers are little-endian. The 16-byte header contains magic `FLIM` at0, u8 version2 at4, u8 representation at5, u16 width at6, u16 height at8, u16 paletteCount at10, zero u32 reserved at12. Dimensions are1…320. Rows run top-to-bottom, pixels left-to-right, without compression or alignment.
 

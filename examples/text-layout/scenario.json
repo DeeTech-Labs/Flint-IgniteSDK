@@ -1,0 +1,32 @@
+{
+  "steps": [
+    {
+      "op": "expect_text",
+      "text": "Датчики температуры"
+    },
+    {
+      "op": "input",
+      "kind": "press"
+    },
+    {
+      "op": "expect_text",
+      "text": "Короткая строка"
+    },
+    {
+      "op": "advance",
+      "ms": 1000
+    },
+    {
+      "op": "input",
+      "kind": "press"
+    },
+    {
+      "op": "expect_text",
+      "text": "Датчики температуры"
+    },
+    {
+      "op": "expect_state",
+      "state": "active"
+    }
+  ]
+}

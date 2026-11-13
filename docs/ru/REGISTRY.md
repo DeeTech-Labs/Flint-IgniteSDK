@@ -4,7 +4,7 @@
 
 [Индекс](README.md) · [English](../en/REGISTRY.md)
 
-ContractRevision `0x20261114`.
+ContractRevision `0x20261115`.
 
 Источник таблиц: spec/services.json, spec/permissions.json и contracts.h. Наличие имени не подтверждает реализованный API, hardware или право доступа. Рабочие Lua-вызовы и ограничения описаны в [Lua API](LUA-API.md); wire — в [архитектуре](ARCHITECTURE.md), [sensors](SENSORS.md), [services](BACKGROUND-SERVICES.md).
 

@@ -1,0 +1,96 @@
+{
+    "id": "example.text-layout",
+    "name": "Explicit text layout",
+    "publisher": "deetech",
+    "version": 1,
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "capabilities": 65,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "permissions": [
+                "ui.render",
+                "input.focused"
+            ],
+            "ui": [
+                {
+                    "kind": "rect",
+                    "w": 280,
+                    "h": 240,
+                    "color": "#102030"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 20,
+                    "y": 18,
+                    "w": 240,
+                    "h": 67,
+                    "color": "#304050",
+                    "extra": 8
+                },
+                {
+                    "kind": "text",
+                    "x": 24,
+                    "y": 20,
+                    "w": 232,
+                    "h": 63,
+                    "overflow": "wrap",
+                    "text": "${app.message}"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 20,
+                    "y": 90,
+                    "w": 240,
+                    "h": 46,
+                    "color": "#304050",
+                    "extra": 8
+                },
+                {
+                    "kind": "text",
+                    "x": 24,
+                    "y": 92,
+                    "w": 232,
+                    "h": 42,
+                    "overflow": "ellipsis",
+                    "text": "A deliberately long single line: temperature humidity background service unavailable"
+                },
+                {
+                    "kind": "rounded",
+                    "x": 20,
+                    "y": 142,
+                    "w": 240,
+                    "h": 67,
+                    "color": "#304050",
+                    "extra": 8
+                },
+                {
+                    "kind": "text",
+                    "x": 24,
+                    "y": 144,
+                    "w": 232,
+                    "h": 63,
+                    "overflow": "wrap",
+                    "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+                },
+                {
+                    "kind": "text",
+                    "x": 32,
+                    "y": 232,
+                    "text": "Free text unchanged",
+                    "color": "#80ff80"
+                }
+            ],
+            "app_api": 1,
+            "logic": {
+                "language": "lua",
+                "path": "main.lua"
+            }
+        }
+    ]
+}

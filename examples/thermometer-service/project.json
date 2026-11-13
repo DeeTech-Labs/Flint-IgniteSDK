@@ -38,20 +38,29 @@
                 {
                     "kind": "text",
                     "x": 12,
-                    "y": 40,
-                    "text": "Temperature: ${app.temperature}"
+                    "y": 20,
+                    "text": "Temperature: ${app.temperature}",
+                    "w": 256,
+                    "h": 42,
+                    "overflow": "wrap"
                 },
                 {
                     "kind": "text",
                     "x": 12,
-                    "y": 80,
-                    "text": "Humidity: ${app.humidity}"
+                    "y": 74,
+                    "text": "Humidity: ${app.humidity}",
+                    "w": 256,
+                    "h": 42,
+                    "overflow": "wrap"
                 },
                 {
                     "kind": "text",
                     "x": 12,
-                    "y": 120,
-                    "text": "Status: ${app.status}"
+                    "y": 128,
+                    "text": "Status: ${app.status}",
+                    "w": 256,
+                    "h": 84,
+                    "overflow": "wrap"
                 }
             ]
         },

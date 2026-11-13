@@ -27,39 +27,51 @@
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 43,
+                    "x": 24,
+                    "y": 24,
                     "text": "${status.title}",
                     "color": "theme.muted",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 109,
+                    "x": 24,
+                    "y": 62,
                     "text": "${status.subject}",
                     "color": "theme.text",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 42,
+                    "overflow": "wrap"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 146,
+                    "x": 24,
+                    "y": 112,
                     "text": "${status.detail}",
                     "color": "theme.text",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 42,
+                    "overflow": "wrap"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 175,
+                    "x": 24,
+                    "y": 158,
                     "text": "${status.scope}",
                     "color": "theme.muted",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
@@ -72,12 +84,15 @@
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 221,
+                    "x": 24,
+                    "y": 203,
                     "text": "${status.button}",
                     "color": "theme.background",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 }
             ],
             "permissions": [
@@ -114,39 +129,51 @@
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 43,
+                    "x": 24,
+                    "y": 24,
                     "text": "${status.title}",
                     "color": "theme.muted",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 109,
+                    "x": 24,
+                    "y": 62,
                     "text": "${status.subject}",
                     "color": "theme.text",
                     "font": 2,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 43,
+                    "overflow": "wrap"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 146,
+                    "x": 24,
+                    "y": 112,
                     "text": "${status.detail}",
                     "color": "theme.text",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 42,
+                    "overflow": "wrap"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 175,
+                    "x": 24,
+                    "y": 158,
                     "text": "${status.scope}",
                     "color": "theme.muted",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
@@ -159,12 +186,15 @@
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 221,
+                    "x": 24,
+                    "y": 203,
                     "text": "${status.button}",
                     "color": "theme.background",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 }
             ],
             "permissions": [

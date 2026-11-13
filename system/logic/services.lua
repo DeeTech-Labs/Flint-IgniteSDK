@@ -83,10 +83,10 @@ local function hit(x,y)
   if x<40 then return 10 end
   if x>=196 and x<236 and page>0 then return 8 end
   if x>=236 and more then return 9 end
- elseif y>=43 and y<169 and x>=8 and x<272 then
-  local index=(y-43)//42+1
-  return rows[index] and index or -1
- elseif y>=174 and y<205 and x>=8 and x<276 then
+ elseif y>=43 and y<179 and x>=8 and x<272 then
+  local index=(y-43)//46+1
+  return (y-43)%46<44 and rows[index] and index or -1
+ elseif y>=183 and y<211 and x>=8 and x<276 then
   local slot=(x-8)//67+4
   return command(slot)>=0 and slot or -1
  end

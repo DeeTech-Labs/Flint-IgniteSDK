@@ -27,46 +27,61 @@
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 43,
+                    "x": 24,
+                    "y": 24,
                     "text": "${operation.title}",
                     "color": "theme.muted",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
-                    "x": 129,
-                    "y": 112,
+                    "x": 24,
+                    "y": 69,
                     "text": "${operation.progress}",
                     "color": "theme.text",
                     "font": 2,
-                    "center": true
+                    "center": true,
+                    "w": 180,
+                    "h": 43,
+                    "overflow": "clip"
                 },
                 {
                     "kind": "text",
                     "x": 208,
-                    "y": 111,
+                    "y": 93,
                     "text": "${operation.unit}",
-                    "color": "theme.muted"
+                    "color": "theme.muted",
+                    "w": 48,
+                    "h": 21,
+                    "overflow": "clip"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 148,
+                    "x": 24,
+                    "y": 130,
                     "text": "${operation.phase}",
                     "color": "theme.text",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 176,
+                    "x": 24,
+                    "y": 158,
                     "text": "${operation.detail}",
                     "color": "theme.muted",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
@@ -79,12 +94,15 @@
                 },
                 {
                     "kind": "text",
-                    "x": 140,
-                    "y": 221,
+                    "x": 24,
+                    "y": 203,
                     "text": "${operation.button}",
                     "color": "theme.background",
                     "font": 0,
-                    "center": true
+                    "center": true,
+                    "w": 232,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 }
             ],
             "permissions": [

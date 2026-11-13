@@ -4,7 +4,7 @@
 
 [Index](INDEX.md) · [Canonical Russian](../ru/REGISTRY.md)
 
-ContractRevision `0x20261114`.
+ContractRevision `0x20261115`.
 
 Tables derive from spec/services.json, spec/permissions.json and contracts.h. Registration does not prove an implemented API, hardware or authorization. [Lua API](LUA-API.md) documents actual calls; [architecture](ARCHITECTURE.md), [sensors](SENSORS.md), [services](BACKGROUND-SERVICES.md) own wire details.
 

@@ -1,6 +1,9 @@
 # FlinT Ecosystem documentation
 
 [Canonical Russian index](../ru/README.md) · [IgniteSDK](../../README.md).
+
+[Text and layout](UI-LAYOUT.md): optional bounded text blocks; application authors remain responsible for layout.
+
 SDK owns shared API/permission/format documentation; OS owns firmware and hardware,
 Flare owns desktop workflows. Cross-repository links are checked against local
 checkouts; that does not assert that the new pages have been published on GitHub.
@@ -19,7 +22,7 @@ References: [Lua](LUA-API.md), [generated registry](REGISTRY.md), [tools](SDK.md
 Explanations: [architecture/formats](ARCHITECTURE.md), [Companion Demand](COMPANION.md),
 [platform extension](PLATFORM-GUIDE.md), [licensing](LICENSING.md), [FLIM measurements](FLIM-BENCHMARK.md).
 
-Contract `0x20261114` requires FLM3 manifests and FLIM v2; nominal API/package/Companion
+Contract `0x20261115` requires FLM3 manifests and FLIM v2; nominal API/package/Companion
 version 1 alone is insufficient. Rebuild old packages; incompatible installed data
 is retained. Historical validation does not validate current firmware. Host tests
 do not measure current, DMA, physical stack, Flash power-loss durability or USB/BLE

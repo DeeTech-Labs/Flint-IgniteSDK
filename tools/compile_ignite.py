@@ -68,6 +68,15 @@ def scene(nodes):
         extra = node.get("resource", 0) if kind == 6 else node.get("extra", 0)
         if kind == 4:
             extra = int(node.get("center", False))
+            if "overflow" in node:
+                modes = {"clip": 8, "wrap": 10, "ellipsis": 12}
+                if (not isinstance(node["overflow"], str) or node["overflow"] not in modes
+                        or type(w) is not int or type(h) is not int
+                        or not 1 <= w <= 640 or not 1 <= h <= 640):
+                    raise ValueError("text overflow requires clip/wrap/ellipsis and positive w/h <= 640")
+                extra |= modes[node["overflow"]]
+        elif "overflow" in node:
+            raise ValueError("overflow is only supported for text")
         if kind == 5:
             extra = node.get("scale", 1)
             w = h = 16 * extra

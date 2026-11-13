@@ -28,7 +28,7 @@ build/docs-installed/bin/ignite check build/my-clock.ignit
 
 ## Приложение Lua
 
-`components[].logic: {"language":"lua","path":"main.lua"}` задаёт отдельную текстовую Lua section выбранного component. `budget`, `permissions`, `capabilities`, `app_api`, `sensor_api`, `ipc_api` также находятся внутри component; package union не даёт runtime неявных прав. UI app/watchface и не более одной службы могут иметь разные исходники и отдельные VM. Каждая Lua VM имеет 48..144 КиБ component budget, 1..100000 инструкций и исходник до 16 КиБ; service admission дополнительно ограничен model quantum/pool. FLM3 и точная ревизия `0x20261114` требуют пересборки всех packages/consumers. Envelope/API/Companion остаются версии 1. См. [фоновые службы и миграцию](BACKGROUND-SERVICES.md).
+`components[].logic: {"language":"lua","path":"main.lua"}` задаёт отдельную текстовую Lua section выбранного component. `budget`, `permissions`, `capabilities`, `app_api`, `sensor_api`, `ipc_api` также находятся внутри component; package union не даёт runtime неявных прав. UI app/watchface и не более одной службы могут иметь разные исходники и отдельные VM. Каждая Lua VM имеет 48..144 КиБ component budget, 1..100000 инструкций и исходник до 16 КиБ; service admission дополнительно ограничен model quantum/pool. FLM3 и точная ревизия `0x20261115` требуют пересборки всех packages/consumers. Envelope/API/Companion остаются версии 1. См. [фоновые службы и миграцию](BACKGROUND-SERVICES.md).
 
 Исходник возвращает таблицу с `update(dt_ms, pressed)`. Для foreground первый вызов при загрузке имеет нулевое время, последующие выполняются Runtime или планировщиком Core. Core ограничивает шаг 100 мс. Ввод требует `input.focused`.
 
@@ -71,7 +71,7 @@ git submodule update --init --recursive
 
 ## Application API 1: ввод, состояние и службы
 
-`"app_api": 1` внутри Lua component добавляет обязательный capability `128` (`CapAppApi`) к объявленным возможностям. Для Lua по-прежнему нужен бит `64`; например, `capabilities: 65` с `app_api: 1` компилируется в `193`. Старый Runtime отклонит такой пакет по отсутствующей возможности. Текущая ревизия `0x20261114` требует FLM3/FLIM v2 и пересборки всех пакетов и потребителей. Обратной совместимости нет; см. [иконки и FLIM](FLIM.md). ABI C++ расширенных классов не сохраняется.
+`"app_api": 1` внутри Lua component добавляет обязательный capability `128` (`CapAppApi`) к объявленным возможностям. Для Lua по-прежнему нужен бит `64`; например, `capabilities: 65` с `app_api: 1` компилируется в `193`. Старый Runtime отклонит такой пакет по отсутствующей возможности. Текущая ревизия `0x20261115` требует FLM3/FLIM v2 и пересборки всех пакетов и потребителей. Обратной совместимости нет; см. [иконки и FLIM](FLIM.md). ABI C++ расширенных классов не сохраняется.
 
 Все новые вызовы доступны только пакетам с `CapAppApi`. Неверные количество/типы аргументов, диапазоны и некорректный UTF-8 завершают обработчик с диагностикой. Ошибки доступа/служб возвращаются как числовые значения `flint::Error`: `0` — успех, `4` — `not_supported`, `5` — `permission_denied`, `7` — `source_unavailable`, `9` — `quota_exceeded`. Полный список находится в `include/flint/contracts.h`. Это не исключения Lua; стандартные библиотеки и unrestricted `require`, `debug`, `io`, `os` не добавляются.
 
@@ -172,7 +172,7 @@ python3 -B tools/build_system.py --output build/firmware-factory --skip-examples
 
 `build_system_icons.py --output <dir>` и `build_builtin_fonts.py --font-dir <fonts> --output <dir>` также пишут в `build/generated/` по умолчанию. Обновление сопровождаемых PNG/шрифтов — отдельный ручной перенос и review результатов, а не побочный эффект сборки. Сохранённые исходные factory/sample-пакеты и заголовки остаются снимками для прежних потребителей; новая CMake-сборка не обновляет их и не использует их вместо актуальной генерации.
 
-Текущие touch/UI-контракты имеют `ContractRevision=0x20261114`, при номинальном Application API 1. Подключайте соответствующее дерево SDK целиком: заголовки, `core_ui.cpp`, `core_touch.cpp`, ресурсы и системные пакеты. Равенство номинальной API-версии не означает совместимость со старой ревизией. OS и Flare используют build-local generated paths; ручное обновление исходных снимков не заменяет генерацию.
+Текущие touch/UI-контракты имеют `ContractRevision=0x20261115`, при номинальном Application API 1. Подключайте соответствующее дерево SDK целиком: заголовки, `core_ui.cpp`, `core_touch.cpp`, ресурсы и системные пакеты. Равенство номинальной API-версии не означает совместимость со старой ревизией. OS и Flare используют build-local generated paths; ручное обновление исходных снимков не заменяет генерацию.
 
 
 [Фоновые службы, FLM3 component budgets, IPC и atomic shared state](BACKGROUND-SERVICES.md).

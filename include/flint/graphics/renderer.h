@@ -88,6 +88,8 @@ struct Bounds {
     int x = 0, y = 0, w = 0, h = 0;
 };
 inline Bounds bounds(const Scene &s, const Op &op) {
+    if (op.kind == Text && (op.extra & TextBox))
+        return {op.x, op.y, op.w, op.h};
     if (op.kind == Text && op.font >= 4) {
         if (op.inkW >= 0)
             return {op.x + op.inkX, op.y + op.inkY, op.inkW, op.inkH};
@@ -96,13 +98,14 @@ inline Bounds bounds(const Scene &s, const Op &op) {
     if (op.kind == Text) {
         const int w = textWidth(op.font, s.data + op.offset, op.length);
         const auto *f = fontData(op.font);
-        return {op.x - (op.extra ? w / 2 : 0) - 4, op.y - be32(f + 16) - 2, w + 8,
+        return {op.x - ((op.extra & TextCentered) ? w / 2 : 0) - 4, op.y - be32(f + 16) - 2, w + 8,
             be32(f + 16) + be32(f + 20) + 4};
     }
     return {op.x, op.y, op.w, op.h};
 }
 inline Bounds dirty(const Scene &a, const Scene &b) {
-    if (a.width != b.width || a.height != b.height || a.count != b.count || a.resourceRevision != b.resourceRevision)
+    if (a.width != b.width || a.height != b.height || a.count != b.count ||
+        a.resourceRevision != b.resourceRevision)
         return {0, 0, b.width, b.height};
     Bounds result;
     bool any = false;
@@ -215,6 +218,97 @@ public:
 };
 using ImageResolver = void (*)(void *, Canvas &, const Op &);
 inline thread_local ImageResolver resourceImage = nullptr;
+// Opt-in text boxes use top-left coordinates. Free text retains its baseline API.
+// Work and storage are bounded by MaxData; no allocation or extra scene ops.
+inline void textBox(const Scene &s, Canvas &canvas, const Op &op) {
+    const auto *value = s.data + op.offset;
+    const size_t n = op.length;
+    int ascent = 0, descent = 0;
+    if (op.font < 4) {
+        const auto *font = fontData(op.font);
+        ascent = be32(font + 16);
+        descent = be32(font + 20);
+    } else {
+        for (size_t i = 0; i < n;) {
+            const auto cp = nextCodepoint(value, n, i);
+            if (cp == '\n')
+                continue;
+            const auto m = metrics(op.font, cp);
+            ascent = std::max(ascent, m.ascent);
+            descent = std::max(descent, m.height - m.ascent);
+        }
+    }
+    const int lineHeight = std::max(1, ascent + descent);
+    const auto saved = canvas.clip;
+    const int left = std::max(saved.x, int(op.x)), top = std::max(saved.y, int(op.y));
+    const int right = std::min(saved.x + saved.w, int(op.x) + op.w);
+    const int bottom = std::min(saved.y + saved.h, int(op.y) + op.h);
+    canvas.clip = {left, top, std::max(0, right - left), std::max(0, bottom - top)};
+    const bool wrap = op.extra & TextWrap, ellipsis = op.extra & TextEllipsis;
+    size_t start = 0;
+    for (int y = op.y; start < n && y + lineHeight <= int(op.y) + op.h; y += lineHeight) {
+        size_t end = start, next = start, space = n;
+        int width = 0;
+        while (next < n) {
+            const auto before = next;
+            const auto cp = nextCodepoint(value, n, next);
+            if (cp == '\n') {
+                end = before;
+                break;
+            }
+            const auto advance = metrics(op.font, cp).advance;
+            if (wrap && width + advance > op.w) {
+                if (before == start)
+                    end = next; // One wide glyph: clip and still make progress.
+                else if (space != n) {
+                    end = space;
+                    next = space + 1;
+                } else {
+                    end = before;
+                    next = before;
+                }
+                break;
+            }
+            if (cp == ' ')
+                space = before;
+            width += advance;
+            end = next;
+        }
+        while (end > start && value[end - 1] == ' ')
+            --end;
+        const bool more = next < n;
+        const bool lastLine = !wrap || y + 2 * lineHeight > int(op.y) + op.h;
+        const bool dots = (ellipsis || (wrap && lastLine && more)) &&
+            (more || textWidth(op.font, value + start, end - start) > op.w);
+        static constexpr uint8_t marker[]{0xe2, 0x80, 0xa6};
+        const int markerWidth = dots ? textWidth(op.font, marker, sizeof(marker)) : 0;
+        if (dots) {
+            size_t cursor = start, fitted = start;
+            int fittedWidth = 0;
+            while (cursor < end) {
+                const auto cp = nextCodepoint(value, end, cursor);
+                const auto advance = metrics(op.font, cp).advance;
+                if (fittedWidth + advance + markerWidth > op.w)
+                    break;
+                fittedWidth += advance;
+                fitted = cursor;
+            }
+            end = fitted;
+        }
+        const int paintedWidth = textWidth(op.font, value + start, end - start) + markerWidth;
+        const int x = op.x + ((op.extra & TextCentered) ? (op.w - paintedWidth) / 2 : 0);
+        canvas.label(x, y + ascent, value + start, end - start, op.color, op.font, false);
+        if (dots)
+            canvas.label(x + paintedWidth - markerWidth, y + ascent, marker, sizeof(marker),
+                op.color, op.font, false);
+        if (!wrap)
+            break;
+        start = next;
+        while (start < n && value[start] == ' ')
+            ++start;
+    }
+    canvas.clip = saved;
+}
 inline void render(const Scene &s, Canvas &canvas) {
     for (int i = 0; i < s.count; ++i) {
         const auto &op = s.ops[i];
@@ -222,9 +316,11 @@ inline void render(const Scene &s, Canvas &canvas) {
         if (b.x + b.w <= canvas.clip.x || b.y + b.h <= canvas.clip.y ||
             b.x >= canvas.clip.x + canvas.clip.w || b.y >= canvas.clip.y + canvas.clip.h)
             continue;
-        if (op.kind == Text)
-            canvas.label(
-                op.x, op.y, s.data + op.offset, op.length, op.color, op.font, op.extra != 0);
+        if (op.kind == Text && (op.extra & TextBox))
+            textBox(s, canvas, op);
+        else if (op.kind == Text)
+            canvas.label(op.x, op.y, s.data + op.offset, op.length, op.color, op.font,
+                (op.extra & TextCentered) != 0);
         else if (op.kind == Bitmap) {
             for (int bit = 0; bit < 256; ++bit)
                 if (s.data[op.offset + bit / 8] & (0x80 >> (bit % 8)))

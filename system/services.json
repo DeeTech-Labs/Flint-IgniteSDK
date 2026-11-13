@@ -60,7 +60,7 @@
                     "x": 8,
                     "y": 43,
                     "w": 264,
-                    "h": 40,
+                    "h": 44,
                     "extra": 8,
                     "color": "theme.surface"
                 },
@@ -68,25 +68,31 @@
                     "kind": "text",
                     "id": "name0",
                     "x": 16,
-                    "y": 60,
+                    "y": 45,
                     "text": "${app.name0}",
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 248,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
                     "id": "state0",
                     "x": 16,
-                    "y": 77,
+                    "y": 66,
                     "text": "${app.state0}",
-                    "color": "theme.muted"
+                    "color": "theme.muted",
+                    "w": 248,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
                     "id": "card1",
                     "x": 8,
-                    "y": 85,
+                    "y": 89,
                     "w": 264,
-                    "h": 40,
+                    "h": 44,
                     "extra": 8,
                     "color": "theme.surface"
                 },
@@ -94,25 +100,31 @@
                     "kind": "text",
                     "id": "name1",
                     "x": 16,
-                    "y": 102,
+                    "y": 91,
                     "text": "${app.name1}",
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 248,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
                     "id": "state1",
                     "x": 16,
-                    "y": 119,
+                    "y": 112,
                     "text": "${app.state1}",
-                    "color": "theme.muted"
+                    "color": "theme.muted",
+                    "w": 248,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
                     "id": "card2",
                     "x": 8,
-                    "y": 127,
+                    "y": 135,
                     "w": 264,
-                    "h": 40,
+                    "h": 44,
                     "extra": 8,
                     "color": "theme.surface"
                 },
@@ -120,100 +132,121 @@
                     "kind": "text",
                     "id": "name2",
                     "x": 16,
-                    "y": 144,
+                    "y": 137,
                     "text": "${app.name2}",
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 248,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
                     "id": "state2",
                     "x": 16,
-                    "y": 161,
+                    "y": 158,
                     "text": "${app.state2}",
-                    "color": "theme.muted"
+                    "color": "theme.muted",
+                    "w": 248,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
                     "id": "button0",
                     "x": 8,
-                    "y": 174,
+                    "y": 183,
                     "w": 63,
-                    "h": 31,
+                    "h": 28,
                     "extra": 8,
                     "color": "theme.surface"
                 },
                 {
                     "kind": "text",
                     "id": "action0",
-                    "x": 39,
-                    "y": 195,
+                    "x": 8,
+                    "y": 187,
                     "text": "${app.action0}",
                     "center": true,
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 63,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
                     "id": "button1",
                     "x": 75,
-                    "y": 174,
+                    "y": 183,
                     "w": 63,
-                    "h": 31,
+                    "h": 28,
                     "extra": 8,
                     "color": "theme.surface"
                 },
                 {
                     "kind": "text",
                     "id": "action1",
-                    "x": 106,
-                    "y": 195,
+                    "x": 75,
+                    "y": 187,
                     "text": "${app.action1}",
                     "center": true,
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 63,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
                     "id": "button2",
                     "x": 142,
-                    "y": 174,
+                    "y": 183,
                     "w": 63,
-                    "h": 31,
+                    "h": 28,
                     "extra": 8,
                     "color": "theme.surface"
                 },
                 {
                     "kind": "text",
                     "id": "action2",
-                    "x": 173,
-                    "y": 195,
+                    "x": 142,
+                    "y": 187,
                     "text": "${app.action2}",
                     "center": true,
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 63,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "rounded",
                     "id": "button3",
                     "x": 209,
-                    "y": 174,
+                    "y": 183,
                     "w": 63,
-                    "h": 31,
+                    "h": 28,
                     "extra": 8,
                     "color": "theme.surface"
                 },
                 {
                     "kind": "text",
                     "id": "action3",
-                    "x": 240,
-                    "y": 195,
+                    "x": 209,
+                    "y": 187,
                     "text": "${app.action3}",
                     "center": true,
-                    "color": "theme.text"
+                    "color": "theme.text",
+                    "w": 63,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 },
                 {
                     "kind": "text",
                     "x": 10,
-                    "y": 228,
+                    "y": 214,
                     "text": "${app.notice}",
-                    "color": "theme.muted"
+                    "color": "theme.muted",
+                    "w": 260,
+                    "h": 21,
+                    "overflow": "ellipsis"
                 }
             ],
             "permissions": [

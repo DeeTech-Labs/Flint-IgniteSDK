@@ -285,7 +285,8 @@ Error Core::operationRender(FlintRender::Scene &scene) {
             if (op.kind == FlintRender::Rounded && op.x == 12 && op.y == 192 && op.w == 256 &&
                 op.h == 44)
                 op.color = 0xfffb; // The protected presentation's disabled action surface.
-            if (op.kind == FlintRender::Text && op.y == 221)
+            if (op.kind == FlintRender::Text &&
+                ((op.extra & FlintRender::TextBox) ? op.y >= 192 : op.y == 221))
                 op.color = 0xfff9;
         }
     }
