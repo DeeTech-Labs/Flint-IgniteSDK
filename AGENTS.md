@@ -430,9 +430,7 @@ Do not describe the sandbox as fully security-audited.
 - Ensure execution failure cannot corrupt shared Core state.
 - Preserve recovery behavior.
 
-Background services are not currently supported.
-
-Do not implement or advertise background execution without an explicit architectural change.
+Background execution uses explicit service components in isolated Lua VMs scheduled by Core. Require component declarations and trusted persistent background grants; ordinary UI runtimes do not remain active in the background. See [service contracts](docs/en/BACKGROUND-SERVICES.md).
 
 ## 11. Ignite Application APIs
 
