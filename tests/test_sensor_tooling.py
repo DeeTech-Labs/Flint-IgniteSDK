@@ -97,13 +97,47 @@ class SensorToolingTests(unittest.TestCase):
     @unittest.skipUnless(len(TOOLS) == 2, "requires ignite-run and ignite-check executable arguments")
     def test_actual_core_scenario(self):
         runner, validator = map(str, TOOLS)
-        project = {"id": "test.sensor-tooling", "name": "Sensors", "publisher": "tests", "version": 1,
-            "app_api": 1, "sensor_api": 1, "capabilities": 67,
-            "budget": {"internal": 98304, "instructions": 12000},
-            "permissions": ["ui.render", "input.focused", "time.timer.create", "sensors.temperature"],
-            "logic": {"language": "lua", "path": "main.lua"},
-            "components": [{"id": "main", "type": "app", "ui": [{"kind": "rect", "w": 280, "h": 240},
-                {"kind": "text", "text": "t=${app.t};g=${app.g};e=${app.e};sim=${app.sim};"}]}]}
+        project = {
+            'id': 'test.sensor-tooling',
+            'name': 'Sensors',
+            'publisher': 'tests',
+            'version': 1,
+            'components': [
+                {
+                    'id': 'main',
+                    'type': 'app',
+                    'ui': [
+                        {
+                            'kind': 'rect',
+                            'w': 280,
+                            'h': 240
+                        },
+                        {
+                            'kind': 'text',
+                            'text': 't=${app.t};g=${app.g};e=${app.e};sim=${app.sim};'
+                        }
+                    ],
+                    'capabilities': 67,
+                    'sensor_api': 1,
+                    'app_api': 1,
+                    'logic': {
+                        'language': 'lua',
+                        'path': 'main.lua'
+                    },
+                    'budget': {
+                        'internal': 98304,
+                        'instructions': 12000,
+                        'external': 0
+                    },
+                    'permissions': [
+                        'ui.render',
+                        'input.focused',
+                        'time.timer.create',
+                        'sensors.temperature'
+                    ]
+                }
+            ]
+        }
         (self.root / "main.lua").write_text('''ignite.schedule(0)
 return {update=function() end,event=function(kind,v)
  if v==1 then local _,e=ignite.sensors.subscribe(1,1,100); ignite.value('e',e)
@@ -141,7 +175,7 @@ end}''')
             result = subprocess.run(native, input=tokens, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
         # Ordinary manifests do not implicitly acquire a virtual hardware catalog.
-        project.pop("sensor_api")
+        project["components"][0].pop("sensor_api")
         (self.root / "main.lua").write_text("return {update=function() end}")
         plain = self.root / "plain.ignit"; plain.write_bytes(compile_project(project, self.root))
         plain_command = [sys.executable, str(ROOT / "tools/ignite.py"), "run", str(plain), "--frames", "1",

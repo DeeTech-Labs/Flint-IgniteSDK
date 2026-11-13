@@ -2,15 +2,15 @@
 
 # Датчики и системная периферия
 
-Контракт разработки `0x20261113`; номинальные версии package/API/Companion остаются 1: framing и layout существующего контейнера не менялись. Изменились permissions и появились новые методы. Старые пакеты/peers отклоняются по ContractRevision. Пересоберите все свои пакеты. Не удаляйте partitions, settings, private storage или grants для обновления. Существующий grants.bin сохраняет формат; ambient_light больше не automatic и требует явного persistent grant. Publisher — metadata, а не доказательство подписи.
+Контракт разработки `0x20261114`; номинальные версии package/API/Companion остаются 1: framing, header и index контейнера не менялись, manifest теперь FLM3 с per-component logic/budgets/declarations. Изменились permissions и появились новые методы. Старые пакеты/peers отклоняются по ContractRevision. Пересоберите все свои пакеты. Не удаляйте partitions, settings, private storage или grants для обновления. Существующий grants.bin сохраняет формат; ambient_light больше не automatic и требует явного persistent grant. Publisher — metadata, а не доказательство подписи.
 
 Канонический каталог логических каналов: `spec/sensors.json`; генератор выпускает `flint/sensor_registry.h`. `temperature` — Celsius, `pressure` — Pa, `humidity` — %, `ambient_light` — lux, `acceleration` — m/s², `angular_velocity` — rad/s. Имена микросхем, I2C и GPIO не являются API приложений. Source.id стабилен в пределах модели. Автовыбор source=0: наименьший priority, затем source_id; неисправный основной источник не вызывает скрытого переключения на другой. Маска нескольких каналов выбирает один источник, поддерживающий всю маску.
 
-Core владеет единственным Broker/cache и authorizer. Backend обменивается bounded desired demand и coherent samples; его методы не выполняют I2C, ADC, Lua, Flash и не ждут конверсии. OS worker владеет аппаратным расписанием. Worker transport buffers не публичный cache. Backend должен переживать Core, будить owner loop при результате и уважать Demand.notBefore, physical min interval и shutdown после последнего потребителя. Один physical sample обслуживает все подписки; медленные подписки и delivery coalesce. Периоды и policy задаёт OS, не приложение. Сторонние фоновые приложения не поддерживаются.
+Core владеет единственным Broker/cache и authorizer. Backend обменивается bounded desired demand и coherent samples; его методы не выполняют I2C, ADC, Lua, Flash и не ждут конверсии. OS worker владеет аппаратным расписанием. Worker transport buffers не публичный cache. Backend должен переживать Core, будить owner loop при результате и уважать Demand.notBefore, physical min interval и shutdown после последнего потребителя. Один physical sample обслуживает все подписки; медленные подписки и delivery coalesce. Периоды и policy задаёт OS, не приложение. Foreground и [фоновые службы](BACKGROUND-SERVICES.md) имеют отдельные owners; shared Broker объединяет demand и не дублирует физическую выборку.
 
 ## Lua
 
-В project.json: `"app_api":1, "sensor_api":1`, Lua capability64 и memory/instruction budgets по обычным правилам. sensor_api добавляет capability8192; cap означает поддержку API, не присутствие оборудования. Во время загрузки/валидации все sensor operations возвращают invalid_state. Вызывайте их из активных update/input/sensor callbacks.
+В `project.json`, внутри нужного `components[]`: `"app_api":1, "sensor_api":1`, Lua capability64 и memory/instruction budgets по обычным правилам. sensor_api добавляет capability8192; cap означает поддержку API, не присутствие оборудования. Во время загрузки/валидации все sensor operations возвращают invalid_state. Вызывайте их из активных update/input/sensor callbacks.
 
 ```lua
 local handle = nil
@@ -32,9 +32,9 @@ return {
 - `catalog(index)` — 1..16, `(metadata,error)`; конец/нет источника — not_supported. Metadata не включает readings и не требует grants.
 - `read(source_id, channel_mask, last_known)` — `(snapshot,error)`, только cache, без I/O. 0 source выбирает основной.
 - `refresh(source_id,mask,timeout_ms)` — `(handle,error)`, async одна новая конверсия, timeout1..60000. Уже находившийся в transport sample не завершает новый refresh.
-- `subscribe(source_id,mask,interval_ms)` — `(handle,error)`, интервал в пределах Source. До8 подписок.
+- `subscribe(source_id,mask,interval_ms)` — `(handle,error)`, интервал в пределах Source. До 8 subscriptions и 8 refresh на owner; до 40 каждого вида суммарно для foreground и четырёх служб.
 - `unsubscribe(handle)` — error; отменяет subscription или pending refresh. После смены runtime/consumer generation старые handles дают stale_handle.
-- Callback `sensor(handle,snapshot,error,drops,refresh_finished)` реально доставляется после input и до timer/update в tick. Все callbacks tick делят instruction budget и32 native API calls. Медленный callback получает последний sample, не неограниченную очередь.
+- Callback `sensor(handle,snapshot,error,drops,refresh_finished)` реально доставляется после input и до timer/update в tick. Все foreground callbacks tick делят instruction budget и32 native API calls; службы используют общий model pool и собственный dispatch allowance. Медленный callback получает последний sample, не неограниченную очередь.
 
 Mask bits0..5 соответствуют порядку каналов выше. Snapshot: source_id,generation,sample_id,timestamp_ms,age_ms,status,reason,channels,simulation,last_known,values. Scalars используют x, motion — x/y/z; каждый канал содержит unit. Timestamp — monotonic completion/read observation, не гарантированное время физической выборки. Чтение cache не меняет его. Status0 absent,1 pending,2 valid,3 stale,4 failed,5 initializing. Saturation/невалидные данные: failed с invalid_argument. Нули не заменяют отсутствие значения. При pending/error/stale обычное чтение не содержит values. last_known=true может вернуть values вместе с исходным unavailable error/status/age; проверяйте last_known. Reset/recovery source generation инвалидирует старое last-known.
 
@@ -67,3 +67,5 @@ Backlog: VEML autorange/коррекция; IMU mounting/calibration/FIFO; пр�
 Motion catalog содержит acceleration_range_m_s2,angular_velocity_range_rad_s,mounting_verified. OS QMI8658: ±19.6133m/s²,±8.936rad/s; фиксированные sensor-aligned device axes, identity mounting. Совпадение осей с геометрией корпуса ещё не проверено: mounting_verified=false. UI rotation оси не меняет. Не называйте unverified mount откалиброванным.
 
 Несовместимые установленные objects и refs сохраняются при старте: смена ContractRevision не считается повреждением storage и не запускает автоматический rollback/удаление объекта. Явный launch возвращает incompatible_contract; список исполнимых пакетов скрывает несовместимые записи до пересборки/переустановки. Private state и durable grants не удаляются.
+
+[Фоновые службы](BACKGROUND-SERVICES.md) используют тот же Broker/cache с отдельными instance-bound handles. Ошибка или смена UI не отменяет demand живой службы. Package permissions union не заменяет component declaration.

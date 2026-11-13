@@ -82,6 +82,30 @@ def scenario_script(path):
             if type(step.get("enabled")) is not bool:
                 raise ValueError("permission enabled must be boolean")
             line = op + " " + name + " " + encoded(step.get("scope", "")) + " " + str(int(step["enabled"]))
+        elif op in ("service_start", "service_stop", "service_pause", "service_resume", "service_auto", "service_revoke", "expect_service"):
+            fields |= {"package", "component"}
+            package = step.get("package", "")
+            if type(package) is not str: raise ValueError("invalid service package")
+            if package: identifier(package)
+            component = step.get("component", "")
+            if type(component) is not str: raise ValueError("invalid service component")
+            component = identifier(component)
+            line = op + " " + encoded(package) + " " + encoded(component)
+            if op == "expect_service":
+                fields |= {"state", "reason"}
+                line += " " + integer(step.get("state"), 0, 4) + " " + integer(step.get("reason", 255), 0, 255)
+                if step.get("reason", 255) not in (*range(9), 255): raise ValueError("invalid service reason")
+            else:
+                fields |= {"expect"}
+                if op == "service_auto":
+                    fields |= {"enabled"}
+                    if type(step.get("enabled")) is not bool: raise ValueError("service autostart enabled must be boolean")
+                    line += " " + str(int(step["enabled"]))
+                line += " " + integer(step.get("expect", 0), 0, 16)
+        elif op == "low_energy":
+            fields |= {"enabled"}
+            if type(step.get("enabled")) is not bool: raise ValueError("low-energy simulation requires boolean")
+            line = op + " " + str(int(step["enabled"]))
         elif op == "sensor_value":
             fields |= {"source", "channel", "x", "y", "z"}
             channels = ("temperature", "pressure", "humidity", "ambient_light", "acceleration", "angular_velocity")
@@ -148,9 +172,9 @@ def main(argv=None):
             project = {
                 "id": args.id, "name": "My watchface", "publisher": args.publisher,
                 "version": 1,
-                "budget": {"internal": 24576, "external": 0, "instructions": 4096},
-                "permissions": ["ui.render", "time.read"],
-                "components": [{"id": "main", "type": "watchface", "ui": [
+                "components": [{"id": "main", "type": "watchface",
+                    "budget": {"internal": 24576, "external": 0, "instructions": 4096},
+                    "capabilities": 1, "permissions": ["ui.render", "time.read"], "ui": [
                     {"kind": "rect", "w": 280, "h": 240, "color": "theme.background"},
                     {"kind": "text", "x": 140, "y": 120, "center": True,
                      "text": "${time.read}", "color": "theme.text"},

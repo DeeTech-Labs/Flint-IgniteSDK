@@ -67,10 +67,7 @@ class ConverterTests(unittest.TestCase):
 def integration(executable):
     with tempfile.TemporaryDirectory() as directory:
         root=Path(directory);(root/"factory").mkdir();(root/"store").mkdir()
-        project={'id':'test.icons','publisher':'tests','name':'Icons','version':1,
-            'permissions':['ui.render'],'icons':{'main':100,'mask':101,'light':102,'dark':103},
-            'components':[{'id':'main','type':'app','ui':[{'kind':'rect','w':280,'h':240}]}],
-            'resources':[]}
+        project={'id': 'test.icons', 'publisher': 'tests', 'name': 'Icons', 'version': 1, 'icons': {'main': 100, 'mask': 101, 'light': 102, 'dark': 103}, 'components': [{'id': 'main', 'type': 'app', 'ui': [{'kind': 'rect', 'w': 280, 'h': 240}], 'permissions': ['ui.render'], 'budget': {'internal': 24576, 'external': 0, 'instructions': 4096}, 'capabilities': 1}], 'resources': []}
         for index,(color,fmt) in enumerate((((255,0,0,255),'INDEX8'),((255,255,255,255),'A4'),
                                          ((0,255,0,255),'INDEX8'),((0,0,255,255),'RGB565+A8'))):
             data,_=encode(Image.new('RGBA',(48,48),color),fmt,'alpha' if fmt=='A4' else None)

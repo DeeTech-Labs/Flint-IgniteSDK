@@ -31,7 +31,8 @@
         "events.subscribe",
         "app.lifecycle",
         "resources.read",
-        "packages.list"
+        "packages.list",
+        "app.ipc"
     ],
     "persistent": [
         "time.timer.persistent",
@@ -79,7 +80,9 @@
         "companion.pc.audio.status",
         "companion.pc.network.stats",
         "companion.pc.storage.stats",
-        "companion.pc.games.status"
+        "companion.pc.games.status",
+        "app.background.execute",
+        "app.background.autostart"
     ],
     "session": [
         "ui.brightness",

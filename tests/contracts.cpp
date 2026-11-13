@@ -1,7 +1,10 @@
 #include <cstdlib>
-#include <flint/package.h>
+#include <flint/background.h>
 #include <flint/binary.h>
 #include <flint/graphics/scene.h>
+#include <flint/lua_app.h>
+#include <flint/manifest.h>
+#include <flint/package.h>
 #include <flint/permissions.h>
 #include <fstream>
 #include <iostream>
@@ -28,7 +31,111 @@ static std::vector<uint8_t> load(const char *file) {
     CHECK(input.good());
     return {std::istreambuf_iterator<char>(input), {}};
 }
+static Bytes componentPackage(
+    bool duplicateLogic = false, bool orphan = false, bool legacy = false) {
+    Writer manifest;
+    manifest.n(legacy ? 0x324d4c46 : 0x334d4c46);
+    manifest.text("test.components");
+    manifest.text("Components");
+    manifest.text("tests");
+    manifest.n(1);
+    manifest.n(2, 2);
+    auto component = [&](const char *id, Component type, uint32_t section, uint32_t logic,
+                         MemoryBudget budget, uint64_t caps,
+                         const std::vector<std::string> &permissions) {
+        manifest.text(id);
+        manifest.n(uint16_t(type), 2);
+        manifest.n(0, 1);
+        manifest.n(section);
+        manifest.n(logic);
+        manifest.n(budget.internal_bytes);
+        manifest.n(budget.external_bytes);
+        manifest.n(budget.instructions);
+        manifest.n(caps, 8);
+        manifest.n(permissions.size(), 2);
+        for (const auto &permission : permissions) {
+            manifest.text(permission);
+            manifest.text("");
+        }
+    };
+    component("main", Component::app, 2, 3, {49152, 1024, 4096}, 1 | CapLua | CapAppApi,
+        {"ui.render", "storage.private"});
+    component("worker", Component::service, 0, duplicateLogic ? 3 : 4, {98304, 0, 12000},
+        CapBackground | CapLua | CapAppApi | sensors::Capability,
+        {"app.background.execute", "sensors.temperature", "storage.private"});
+    for (int i = 0; i < 4; ++i)
+        manifest.n(0);
+    FlintRender::Scene scene;
+    FlintRender::rect(scene, 0, 0, 280, 240, 0);
+    Bytes ui(FlintRender::MaxEncoded);
+    ui.resize(FlintRender::encode(scene, ui.data(), ui.size()));
+    const Bytes logic{'r', 'e', 't', 'u', 'r', 'n', ' ', '{', '}'};
+    std::vector<std::pair<Section, Bytes>> sections{{Section::manifest, manifest.data},
+        {Section::ui, ui}, {Section::lua, logic}, {Section::lua, logic}};
+    if (orphan)
+        sections.push_back({Section::lua, logic});
+    uint32_t offset = HeaderSize + sections.size() * EntrySize, total = offset;
+    for (const auto &section : sections)
+        total += section.second.size();
+    Writer package;
+    package.raw(PackageMagic);
+    package.n(PackageVersion, 2);
+    package.n(HeaderSize, 2);
+    package.n(ContractRevision);
+    package.n(total);
+    package.n(sections.size());
+    package.n(HeaderSize);
+    package.n(0);
+    package.raw(std::array<uint8_t, 32>{});
+    uint32_t id = 1;
+    for (const auto &[type, bytes] : sections) {
+        package.n(id++);
+        package.n(uint16_t(type), 2);
+        package.n(0, 2);
+        package.n(offset);
+        package.n(bytes.size());
+        package.n(0);
+        package.n(0);
+        offset += bytes.size();
+    }
+    for (const auto &section : sections)
+        package.raw(section.second);
+    Sha256 hash;
+    hash.update(package.data);
+    const auto digest = hash.finish();
+    std::copy(digest.begin(), digest.end(), package.data.begin() + 32);
+    return package.data;
+}
+static void componentManifestContracts() {
+    auto bytes = componentPackage();
+    Package package;
+    CHECK(package.open({&bytes, uint32_t(bytes.size()), read}) == Error::ok);
+    Manifest manifest;
+    CHECK(loadManifest(package, manifest) == Error::ok);
+    CHECK(manifest.components.size() == 2 && manifest.components[1].section == 0);
+    CHECK(manifest.components[0].logicSection == 3 && manifest.components[1].logicSection == 4);
+    CHECK(manifest.budget.internal_bytes == 98304 && manifest.budget.external_bytes == 1024 &&
+        manifest.budget.instructions == 12000);
+    CHECK(manifest.permissions.size() == 4 &&
+        manifest.permissions.front().permission == "app.background.execute");
+    CHECK(manifest.components[0].permissions.size() == 2 &&
+        manifest.components[1].permissions.size() == 3);
+#ifdef FLINT_ENABLE_LUA
+    CHECK(validateApplication(package, manifest, {98304, 1024, 12000}, UINT64_MAX) == Error::ok);
+    bytes = componentPackage(false, true);
+    CHECK(package.open({&bytes, uint32_t(bytes.size()), read}) == Error::ok);
+    CHECK(validateApplication(package, manifest, {98304, 1024, 12000}, UINT64_MAX) ==
+        Error::invalid_package);
+#endif
+    bytes = componentPackage(true);
+    CHECK(package.open({&bytes, uint32_t(bytes.size()), read}) == Error::ok);
+    CHECK(loadManifest(package, manifest) == Error::invalid_package);
+    bytes = componentPackage(false, false, true);
+    CHECK(package.open({&bytes, uint32_t(bytes.size()), read}) == Error::ok);
+    CHECK(loadManifest(package, manifest) == Error::invalid_package);
+}
 int main(int argc, char **argv) {
+    componentManifestContracts();
     {
         Reader reader{{}, std::numeric_limits<size_t>::max()};
         CHECK(reader.n(2) == 0 && !reader.valid);

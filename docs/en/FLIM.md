@@ -2,7 +2,7 @@
 
 [Canonical Russian specification](../ru/FLIM.md)
 
-Development revision `0x20261113` accepts FLM2 manifests and FLIM v2 only. Rebuild all packages and consumers; no legacy decoder is provided. PNG/SVG conversion, sizing and quantization run on the host.
+Development revision `0x20261114` accepts FLM3 manifests and FLIM v2 only. Rebuild all packages and consumers; no legacy decoder is provided. PNG/SVG conversion, sizing and quantization run on the host.
 
 All integers are little-endian. The 16-byte header contains magic `FLIM` at0, u8 version2 at4, u8 representation at5, u16 width at6, u16 height at8, u16 paletteCount at10, zero u32 reserved at12. Dimensions are1…320. Rows run top-to-bottom, pixels left-to-right, without compression or alignment.
 
@@ -14,7 +14,7 @@ All integers are little-endian. The 16-byte header contains magic `FLIM` at0, u8
 
 Exact length is `16+3*paletteCount+stride*height`. RGB565 uses R5/G6/B5. Alpha is straight, A4 expands by17. Alpha0 skips the pixel,255 directly writes; intermediate channels use `(src*a+dst*(255-a)+127)/255` in RGB565 code values, reading the actual canvas including byte-swapped storage. A4 uses the drawing color. Invalid types, sizes, indices, padding, lengths and truncations fail safely.
 
-Project `icons` optionally references resource IDs `main`, `mask`, `light`, `dark`. If any variant exists, main is required. Each icon must be48×48; mask must be A4, other variants colored. FLM2 appends these four u32 IDs after components, always including zero for absent entries. Native manifest validation checks references; invalid image contents produce the standard launcher tile. A broken package hash still rejects installation.
+Project `icons` optionally references resource IDs `main`, `mask`, `light`, `dark`. If any variant exists, main is required. Each icon must be48×48; mask must be A4, other variants colored. FLM3 appends these four u32 IDs after components, always including zero for absent entries. Native manifest validation checks references; invalid image contents produce the standard launcher tile. A broken package hash still rejects installation.
 
 Theme `appearance=light|dark` defaults to light; `icons=normal|themed` defaults to normal. Normal selects light/dark if declared, otherwise main. Themed selects mask, otherwise main. Invalid/unavailable selected resources fall back to the standard tile. Mask tint is semantic `accent`; no color inversion occurs. Themes also expose surface/pressed/muted/background/text RGB565 colors.
 
@@ -43,3 +43,5 @@ The launcher_icons test covers120 apps and maximal IDs. Lua can reposition image
 Derived resourceRevision includes catalog, theme mode and read-failure cache generations. Core synchronizes it before dirty comparison; a warm-resource failure during a clipped repaint requests a subsequent complete frame.
 
 ResourceManager/Runtime close the decoder's borrowed Source before local views/read contexts expire. Scratch remains shared; validate without a subsequent open returns invalid_state.
+
+[FLM3 component declarations and SDK migration](BACKGROUND-SERVICES.md); manifest changes do not change the FLIM v2 image codec.

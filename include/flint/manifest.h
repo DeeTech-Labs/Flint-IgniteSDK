@@ -12,6 +12,10 @@ struct ComponentInfo {
     Component type{Component::app};
     Role role{};
     uint32_t section{};
+    uint32_t logicSection{};
+    MemoryBudget budget{};
+    uint64_t capabilities{};
+    std::vector<Declaration> permissions;
 };
 struct IconResources {
     uint32_t main{}, mask{}, light{}, dark{};
@@ -37,7 +41,7 @@ class ApplicationValidation {
     Package *package_{};
     Manifest *manifest_{};
     uint64_t generation_{}, capabilities_{};
-    uint32_t index_{}, offset_{}, luaCount_{};
+    uint32_t index_{}, offset_{};
     Entry entry_{};
     Bytes content_;
     Error error_{Error::invalid_state};

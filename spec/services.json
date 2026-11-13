@@ -175,6 +175,18 @@
             "name": "time_status",
             "mutates": false,
             "trust": "authenticated_companion"
+        },
+        {
+            "id": 30,
+            "name": "services",
+            "mutates": false,
+            "trust": "authenticated_companion"
+        },
+        {
+            "id": 31,
+            "name": "service_control",
+            "mutates": true,
+            "trust": "authenticated_companion"
         }
     ]
 }

@@ -3,15 +3,6 @@
     "name": "FlinT Startup",
     "publisher": "deetech",
     "version": 2,
-    "permissions": [
-        "ui.render",
-        "system.locale.read",
-        "system.info",
-        "input.focused",
-        "ui.navigation",
-        "time.timer.create",
-        "system.settings.read"
-    ],
     "components": [
         {
             "id": "main",
@@ -93,18 +84,27 @@
                     "font": 0,
                     "center": true
                 }
-            ]
+            ],
+            "permissions": [
+                "ui.render",
+                "system.locale.read",
+                "system.info",
+                "input.focused",
+                "ui.navigation",
+                "time.timer.create",
+                "system.settings.read"
+            ],
+            "app_api": 1,
+            "capabilities": 6209,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "logic": {
+                "language": "lua",
+                "path": "scripts/boot.lua"
+            }
         }
-    ],
-    "app_api": 1,
-    "capabilities": 6209,
-    "budget": {
-        "internal": 49152,
-        "external": 0,
-        "instructions": 4096
-    },
-    "logic": {
-        "language": "lua",
-        "path": "scripts/boot.lua"
-    }
+    ]
 }

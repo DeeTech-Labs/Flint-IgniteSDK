@@ -3,15 +3,6 @@
     "name": "Settings",
     "publisher": "deetech",
     "version": 3,
-    "permissions": [
-        "ui.render",
-        "system.settings.read",
-        "system.locale.read",
-        "system.info",
-        "input.focused",
-        "ui.navigation",
-        "time.timer.create"
-    ],
     "components": [
         {
             "id": "main",
@@ -232,20 +223,29 @@
                     "color": "theme.text",
                     "center": false
                 }
-            ]
+            ],
+            "permissions": [
+                "ui.render",
+                "system.settings.read",
+                "system.locale.read",
+                "system.info",
+                "input.focused",
+                "ui.navigation",
+                "time.timer.create"
+            ],
+            "app_api": 1,
+            "capabilities": 6211,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "logic": {
+                "language": "lua",
+                "path": "scripts/settings.lua"
+            }
         }
     ],
-    "app_api": 1,
-    "capabilities": 6211,
-    "budget": {
-        "internal": 49152,
-        "external": 0,
-        "instructions": 4096
-    },
-    "logic": {
-        "language": "lua",
-        "path": "scripts/settings.lua"
-    },
     "icons": {
         "main": 100,
         "mask": 101

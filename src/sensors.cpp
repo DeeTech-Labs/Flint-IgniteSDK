@@ -12,10 +12,15 @@ bool validMask(Mask m) {
     return m && !(m & ~AllChannels);
 }
 } // namespace
-Error Broker::authorized(Mask mask) const {
+bool Broker::active(InstanceKey owner) const {
+    return owner.id && owner.generation &&
+        std::find(owners_.begin(), owners_.end(), owner) != owners_.end();
+}
+Error Broker::authorized(InstanceKey owner, Mask mask) const {
     if (!validMask(mask))
         return Error::invalid_argument;
-    return active_ && authorize_ ? authorize_(context_, mask) : Error::permission_denied;
+    return active(owner) && authorize_ ? authorize_(context_, owner, mask)
+                                       : Error::permission_denied;
 }
 void Broker::attach(Backend *backend) {
     cancelAll();
@@ -39,12 +44,38 @@ void Broker::cancelAll() {
     refreshes_ = {};
     aggregate();
 }
-void Broker::owner(uint64_t runtime, uint64_t consumer, bool active) {
-    if (runtime_ != runtime || consumer_ != consumer || !active)
-        cancelAll();
-    runtime_ = runtime;
-    consumer_ = consumer;
-    active_ = active;
+Error Broker::activate(InstanceKey owner) {
+    if (!owner.id || !owner.generation)
+        return Error::invalid_argument;
+    for (auto &entry : owners_)
+        if (entry.id == owner.id) {
+            if (entry == owner)
+                return Error::ok;
+            if (entry.generation > owner.generation)
+                return Error::stale_handle;
+            const auto old = entry;
+            cancelOwner(old);
+            entry = owner;
+            return Error::ok;
+        }
+    for (auto &entry : owners_)
+        if (!entry.id) {
+            entry = owner;
+            return Error::ok;
+        }
+    return Error::quota_exceeded;
+}
+void Broker::cancelOwner(InstanceKey owner) {
+    for (auto &entry : owners_)
+        if (entry == owner)
+            entry = {};
+    for (auto &entry : subscriptions_)
+        if (entry.handle && entry.owner == owner)
+            entry = {};
+    for (auto &entry : refreshes_)
+        if (entry.handle && entry.owner == owner)
+            entry = {};
+    aggregate();
 }
 Error Broker::begin() {
     if (!backend_) {
@@ -97,7 +128,7 @@ size_t Broker::index(SourceId id, Mask mask) const {
     }
     return best;
 }
-Read Broker::read(SourceId id, Mask mask, bool lastKnown, uint64_t now) const {
+Read Broker::read(InstanceKey owner, SourceId id, Mask mask, bool lastKnown, uint64_t now) const {
     Read result;
     if (!validMask(mask)) {
         result.error = Error::invalid_argument;
@@ -108,7 +139,7 @@ Read Broker::read(SourceId id, Mask mask, bool lastKnown, uint64_t now) const {
         result.sample.status = Status::absent;
         return result;
     }
-    result.error = authorized(mask);
+    result.error = authorized(owner, mask);
     if (result.error != Error::ok)
         return result;
     return inspect(id, mask, lastKnown, now);
@@ -158,20 +189,25 @@ Read Broker::inspect(SourceId id, Mask mask, bool lastKnown, uint64_t now) const
 uint64_t Broker::allocate() {
     return serial_ == uint64_t(INT64_MAX) ? 0 : ++serial_;
 }
-Error Broker::subscribe(SourceId id, Mask mask, uint32_t interval, uint64_t now, uint64_t &handle) {
+Error Broker::subscribe(
+    InstanceKey owner, SourceId id, Mask mask, uint32_t interval, uint64_t now, uint64_t &handle) {
     handle = 0;
     if (!validMask(mask))
         return Error::invalid_argument;
     const auto i = index(id, mask);
     if (i == count_)
         return Error::not_supported;
-    auto error = authorized(mask);
+    auto error = authorized(owner, mask);
     if (error != Error::ok)
         return error;
     if (!interval)
         interval = sources_[i].defaultIntervalMs;
     if (interval < sources_[i].minIntervalMs || interval > sources_[i].maxIntervalMs)
         return Error::invalid_argument;
+    if (std::count_if(subscriptions_.begin(), subscriptions_.end(), [&](const Entry &e) {
+            return e.handle && e.owner == owner;
+        }) >= std::ptrdiff_t(MaxSubscriptions))
+        return Error::quota_exceeded;
     for (auto &e : subscriptions_)
         if (!e.handle) {
             const auto h = allocate();
@@ -179,6 +215,7 @@ Error Broker::subscribe(SourceId id, Mask mask, uint32_t interval, uint64_t now,
                 return Error::resource_exhausted;
             e = {};
             e.handle = h;
+            e.owner = owner;
             e.source = sources_[i].id;
             e.channels = mask;
             e.interval = interval;
@@ -189,31 +226,36 @@ Error Broker::subscribe(SourceId id, Mask mask, uint32_t interval, uint64_t now,
         }
     return Error::quota_exceeded;
 }
-Error Broker::unsubscribe(uint64_t handle) {
+Error Broker::unsubscribe(InstanceKey owner, uint64_t handle) {
     for (auto &e : subscriptions_)
-        if (handle && e.handle == handle) {
+        if (handle && e.handle == handle && e.owner == owner) {
             e = {};
             aggregate();
             return Error::ok;
         }
     return Error::stale_handle;
 }
-Error Broker::refresh(SourceId id, Mask mask, uint64_t timeout, uint64_t now, uint64_t &handle) {
+Error Broker::refresh(
+    InstanceKey owner, SourceId id, Mask mask, uint64_t timeout, uint64_t now, uint64_t &handle) {
     handle = 0;
     if (!validMask(mask) || !timeout || timeout > 60000)
         return Error::invalid_argument;
     const auto i = index(id, mask);
     if (i == count_)
         return Error::not_supported;
-    auto error = authorized(mask);
+    auto error = authorized(owner, mask);
     if (error != Error::ok)
         return error;
     // Drain results already queued by the worker before capturing the refresh boundary.
     // Millisecond timestamps alone cannot distinguish an old completion in the same tick.
     maintain(now);
-    error = authorized(mask);
+    error = authorized(owner, mask);
     if (error != Error::ok)
         return error;
+    if (std::count_if(refreshes_.begin(), refreshes_.end(), [&](const Entry &e) {
+            return e.handle && e.owner == owner;
+        }) >= std::ptrdiff_t(MaxRefresh))
+        return Error::quota_exceeded;
     for (auto &e : refreshes_)
         if (!e.handle) {
             auto h = allocate();
@@ -221,6 +263,7 @@ Error Broker::refresh(SourceId id, Mask mask, uint64_t timeout, uint64_t now, ui
                 return Error::resource_exhausted;
             e = {};
             e.handle = h;
+            e.owner = owner;
             e.source = sources_[i].id;
             e.channels = mask;
             e.deadline = add(now, timeout);
@@ -234,9 +277,9 @@ Error Broker::refresh(SourceId id, Mask mask, uint64_t timeout, uint64_t now, ui
         }
     return Error::quota_exceeded;
 }
-Error Broker::cancel(uint64_t handle) {
+Error Broker::cancel(InstanceKey owner, uint64_t handle) {
     for (auto &e : refreshes_)
-        if (handle && e.handle == handle) {
+        if (handle && e.handle == handle && e.owner == owner) {
             e = {};
             aggregate();
             return Error::ok;
@@ -271,7 +314,7 @@ void Broker::aggregate() {
     for (size_t i = 0; i < count_; ++i)
         demands[i].source = sources_[i].id;
     auto merge = [&](const Entry &e, bool refresh) {
-        if (!e.handle || e.finished || authorized(e.channels) != Error::ok)
+        if (!e.handle || e.finished || authorized(e.owner, e.channels) != Error::ok)
             return;
         const auto i = index(e.source, e.channels);
         if (i == count_)
@@ -344,13 +387,14 @@ Error Broker::ingest(const Sample &sample, uint64_t now) {
     if (sample.status == Status::valid)
         good_[i] = sample;
     for (auto &e : subscriptions_)
-        if (e.handle && !e.finished && e.source == sample.source &&
-            (sample.channels & e.channels) == e.channels && now >= e.next) {
+        if (e.handle && !e.finished && authorized(e.owner, e.channels) == Error::ok &&
+            e.source == sample.source && (sample.channels & e.channels) == e.channels &&
+            now >= e.next) {
             notify(e, false);
             e.next = add(now, e.interval);
         }
     for (auto &e : refreshes_)
-        if (e.handle && !e.finished &&
+        if (e.handle && !e.finished && authorized(e.owner, e.channels) == Error::ok &&
             (sample.status == Status::valid || sample.status == Status::failed ||
                 sample.status == Status::absent) &&
             e.source == sample.source && (sample.channels & e.channels) == e.channels &&
@@ -364,12 +408,12 @@ Error Broker::ingest(const Sample &sample, uint64_t now) {
 void Broker::maintain(uint64_t now) {
     for (auto &e : subscriptions_)
         if (e.handle) {
-            if (authorized(e.channels) != Error::ok)
+            if (authorized(e.owner, e.channels) != Error::ok)
                 e = {};
         }
     for (auto &e : refreshes_)
         if (e.handle) {
-            auto error = authorized(e.channels);
+            auto error = authorized(e.owner, e.channels);
             if (error != Error::ok)
                 e = {};
         }
@@ -391,11 +435,11 @@ void Broker::maintain(uint64_t now) {
         }
     aggregate();
 }
-bool Broker::takeEvent(Event &event, uint64_t now) {
+bool Broker::takeEvent(InstanceKey owner, Event &event, uint64_t now) {
     auto take = [&](auto &entries, bool refresh) {
         for (auto &e : entries)
-            if (e.handle && e.pending) {
-                if (authorized(e.channels) != Error::ok) {
+            if (e.handle && e.owner == owner && e.pending) {
+                if (authorized(e.owner, e.channels) != Error::ok) {
                     e = {};
                     aggregate();
                     continue;
@@ -404,7 +448,7 @@ bool Broker::takeEvent(Event &event, uint64_t now) {
                 event.handle = e.handle;
                 event.drops = e.drops;
                 event.refreshFinished = refresh;
-                event.reading = read(e.source, e.channels, false, now);
+                event.reading = read(owner, e.source, e.channels, false, now);
                 if (refresh && e.expired) {
                     event.reading = {};
                     event.reading.error = Error::source_unavailable;
@@ -425,17 +469,30 @@ bool Broker::takeEvent(Event &event, uint64_t now) {
     };
     return take(subscriptions_, false) || take(refreshes_, true);
 }
+uint64_t Broker::nextWake(InstanceKey owner) const {
+    if (!active(owner))
+        return UINT64_MAX;
+    uint64_t next = UINT64_MAX;
+    for (const auto &entry : refreshes_)
+        if (entry.handle && entry.owner == owner) {
+            if (authorized(owner, entry.channels) != Error::ok)
+                continue;
+            if (entry.pending)
+                return 0;
+            if (!entry.finished)
+                next = std::min(next, entry.deadline);
+        }
+    for (const auto &entry : subscriptions_)
+        if (entry.handle && entry.owner == owner && entry.pending &&
+            authorized(owner, entry.channels) == Error::ok)
+            return 0;
+    return next;
+}
 uint64_t Broker::nextWake() const {
     uint64_t next = backend_ ? backend_->nextWake() : UINT64_MAX;
-    for (const auto &e : refreshes_)
-        if (e.handle && !e.finished)
-            next = std::min(next, e.deadline);
-    for (const auto &e : subscriptions_)
-        if (e.handle && e.pending)
-            return 0;
-    for (const auto &e : refreshes_)
-        if (e.handle && e.pending)
-            return 0;
+    for (const auto &owner : owners_)
+        if (owner.id)
+            next = std::min(next, nextWake(owner));
     return next;
 }
 } // namespace flint::sensors

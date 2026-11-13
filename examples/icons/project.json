@@ -3,21 +3,118 @@
     "name": "Icon resources",
     "publisher": "deetech",
     "version": 1,
-    "permissions": ["ui.render", "ui.resources"],
-    "capabilities": 3,
-    "icons": {"main": 100, "mask": 101, "light": 102, "dark": 103},
+    "icons": {
+        "main": 100,
+        "mask": 101,
+        "light": 102,
+        "dark": 103
+    },
     "resources": [
-        {"id": 100, "path": "main.png", "format": "image", "representation": "INDEX8", "size": [48, 48]},
-        {"id": 101, "path": "mask.png", "format": "image", "representation": "A4", "mask": "alpha", "size": [48, 48]},
-        {"id": 102, "path": "light.png", "format": "image", "representation": "INDEX8", "size": [48, 48]},
-        {"id": 103, "path": "dark.png", "format": "image", "representation": "RGB565+A8", "size": [48, 48]}
+        {
+            "id": 100,
+            "path": "main.png",
+            "format": "image",
+            "representation": "INDEX8",
+            "size": [
+                48,
+                48
+            ]
+        },
+        {
+            "id": 101,
+            "path": "mask.png",
+            "format": "image",
+            "representation": "A4",
+            "mask": "alpha",
+            "size": [
+                48,
+                48
+            ]
+        },
+        {
+            "id": 102,
+            "path": "light.png",
+            "format": "image",
+            "representation": "INDEX8",
+            "size": [
+                48,
+                48
+            ]
+        },
+        {
+            "id": 103,
+            "path": "dark.png",
+            "format": "image",
+            "representation": "RGB565+A8",
+            "size": [
+                48,
+                48
+            ]
+        }
     ],
-    "components": [{"id": "main", "type": "app", "ui": [
-        {"kind": "rect", "w": 280, "h": 240, "color": "theme.background"},
-        {"kind": "text", "x": 140, "y": 42, "center": true, "text": "FLIM v2", "color": "theme.text"},
-        {"kind": "image", "x": 40, "y": 76, "w": 48, "h": 48, "resource": 100},
-        {"kind": "image", "x": 116, "y": 76, "w": 48, "h": 48, "resource": 101, "color": "theme.accent"},
-        {"kind": "image", "x": 192, "y": 76, "w": 48, "h": 48, "resource": 103},
-        {"kind": "text", "x": 140, "y": 168, "center": true, "text": "INDEX8 / A4 / RGB+A", "color": "theme.text"}
-    ]}]
+    "components": [
+        {
+            "id": "main",
+            "type": "app",
+            "ui": [
+                {
+                    "kind": "rect",
+                    "w": 280,
+                    "h": 240,
+                    "color": "theme.background"
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 42,
+                    "center": true,
+                    "text": "FLIM v2",
+                    "color": "theme.text"
+                },
+                {
+                    "kind": "image",
+                    "x": 40,
+                    "y": 76,
+                    "w": 48,
+                    "h": 48,
+                    "resource": 100
+                },
+                {
+                    "kind": "image",
+                    "x": 116,
+                    "y": 76,
+                    "w": 48,
+                    "h": 48,
+                    "resource": 101,
+                    "color": "theme.accent"
+                },
+                {
+                    "kind": "image",
+                    "x": 192,
+                    "y": 76,
+                    "w": 48,
+                    "h": 48,
+                    "resource": 103
+                },
+                {
+                    "kind": "text",
+                    "x": 140,
+                    "y": 168,
+                    "center": true,
+                    "text": "INDEX8 / A4 / RGB+A",
+                    "color": "theme.text"
+                }
+            ],
+            "permissions": [
+                "ui.render",
+                "ui.resources"
+            ],
+            "capabilities": 3,
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            }
+        }
+    ]
 }

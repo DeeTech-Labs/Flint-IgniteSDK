@@ -39,6 +39,8 @@ inline constexpr ServiceDescriptor ServiceRegistry[]{
     ServiceDescriptor{Method::sensor_catalog, "sensor_catalog", false},
     ServiceDescriptor{Method::sensor_diagnostic, "sensor_diagnostic", true},
     ServiceDescriptor{Method::time_status, "time_status", false},
+    ServiceDescriptor{Method::services, "services", false},
+    ServiceDescriptor{Method::service_control, "service_control", true},
 };
 
 static_assert(uint16_t(Method::hello) == 1);
@@ -70,4 +72,6 @@ static_assert(uint16_t(Method::session_close) == 26);
 static_assert(uint16_t(Method::sensor_catalog) == 27);
 static_assert(uint16_t(Method::sensor_diagnostic) == 28);
 static_assert(uint16_t(Method::time_status) == 29);
+static_assert(uint16_t(Method::services) == 30);
+static_assert(uint16_t(Method::service_control) == 31);
 } // namespace flint

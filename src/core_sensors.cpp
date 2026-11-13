@@ -4,61 +4,44 @@
 
 namespace flint {
 Error Core::authorizeApp(std::string_view name, std::string_view scope, uint64_t session) {
-    const auto *spec = permission(name);
+    return authorize(foregroundBinding_, name, scope, session);
+}
+Error Core::authorize(
+    HostBinding &host, std::string_view name, std::string_view scope, uint64_t session) {
+    return authorizeCaller(caller(host), name, scope, session);
+}
+Error Core::authorizeCaller(
+    const Caller &execution, std::string_view name, std::string_view scope, uint64_t session) {
+    const auto *spec = flint::permission(name);
     if (!spec)
         return Error::not_supported;
-    if (runtime_.state() != State::active)
+    if (!execution.active || !execution.manifest || !execution.component ||
+        !execution.principal.generation)
         return Error::permission_denied;
-    const auto &manifest = runtime_.manifest();
+    if (execution.service && name != "app.background.execute") {
+        const auto background = authorizeCaller(execution, "app.background.execute");
+        if (background != Error::ok)
+            return background;
+    }
     bool declared = false;
-    for (const auto &d : manifest.permissions)
+    for (const auto &d : execution.component->permissions)
         declared |= d.permission == name && d.scope == scope;
     if (!declared)
         return Error::permission_denied;
-    // Cache only installed identity, never an authorization decision. Publisher is metadata,
-    // not cryptographic provenance. The installed package hash binds persistent grants.
-    if (metricRuntime_ != runtime_.generation() || metricCatalog_ != packages_.revision()) {
-        metricRuntime_ = runtime_.generation();
-        metricCatalog_ = packages_.revision();
-        Installed installed;
-        metricIdentityValid_ = packages_.locate(manifest.id, installed) == Error::ok;
-        if (metricIdentityValid_) {
-            // Identity hash convention is shared with the existing permission records.
-            auto hash = [](std::string_view value) {
-                Sha256 h;
-                h.update({reinterpret_cast<const uint8_t *>(value.data()), value.size()});
-                auto digest = h.finish();
-                Reader reader{digest};
-                return reader.n(8);
-            };
-            File file;
-            Package package;
-            metricIdentityValid_ =
-                file.open(installed.path) && package.open(file.source()) == Error::ok;
-            metricPrincipal_ = {hash(manifest.id), hash(manifest.publisher), package.identity()};
-            metricIdentityValid_ &= metricPrincipal_.generation != 0 &&
-                metricPrincipal_.generation == runtime_.packageIdentity() &&
-                installed.manifest.publisher == manifest.publisher;
-            metricFactory_ = installed.factory;
-        }
-    }
-    if (!metricIdentityValid_)
-        return Error::permission_denied;
-    Call call{metricPrincipal_, scope, platform_.monotonic(), session, 0, platform_.capabilities,
-        true, true, metricFactory_};
+    Call call{execution.principal, scope, platform_.monotonic(), session, 0, platform_.capabilities,
+        true, !execution.service, execution.system};
     if (spec->access == Access::automatic || spec->access == Access::restricted)
-        return authorize(*spec, call, {});
+        return flint::authorize(*spec, call, {});
     for (auto &record : grants_) {
-        if (record.package != manifest.id)
+        if (record.package != execution.manifest->id)
             continue;
-        Grant grant{{metricPrincipal_.app, metricPrincipal_.publisher, record.generation},
+        Grant grant{{execution.principal.app, execution.principal.publisher, record.generation},
             record.permission, record.scope, record.expires, record.session, record.action,
             record.enabled};
         auto grantCall = call;
         if (spec->access == Access::session && !grantCall.session)
-            grantCall.session =
-                record.session; // Live Core-issued session, cleared at disconnect/boot.
-        if (authorize(*spec, grantCall, std::span(&grant, 1)) == Error::ok) {
+            grantCall.session = record.session;
+        if (flint::authorize(*spec, grantCall, std::span(&grant, 1)) == Error::ok) {
             record.enabled = grant.active;
             return Error::ok;
         }
@@ -66,12 +49,27 @@ Error Core::authorizeApp(std::string_view name, std::string_view scope, uint64_t
     return Error::permission_denied;
 }
 void Core::sensorOwner() {
-    sensors_.owner(
-        runtime_.generation(), runtime_.consumerGeneration(), runtime_.state() == State::active);
+    const InstanceKey key{1, runtime_.consumerGeneration() + 1};
+    if (foregroundBinding_.key != key) {
+        sensors_.cancelOwner(foregroundBinding_.key);
+        foregroundBinding_.key = key;
+    }
+    if (runtime_.state() == State::active)
+        (void)sensors_.activate(key);
+    else
+        sensors_.cancelOwner(key);
 }
-Error Core::sensorCall(const sensors::Request &request, sensors::Reply &reply) {
-    sensorOwner();
+Error Core::sensorCall(HostBinding &host, const sensors::Request &request, sensors::Reply &reply) {
+    if (!host.service)
+        sensorOwner();
+    const auto execution = caller(host);
+    if (!execution.active || host.closing)
+        return Error::invalid_state;
+    const auto owner = host.key;
     const auto at = platform_.monotonic();
+    if (execution.service && request.operation == sensors::Operation::subscribe &&
+        request.intervalMs < platform_.background.minSensorIntervalMs)
+        return Error::invalid_argument;
     switch (request.operation) {
     case sensors::Operation::catalog: {
         const auto catalog = sensors_.catalog();
@@ -81,24 +79,28 @@ Error Core::sensorCall(const sensors::Request &request, sensors::Reply &reply) {
         return Error::ok;
     }
     case sensors::Operation::read:
-        reply.reading = sensors_.read(request.source, request.channels, request.lastKnown, at);
+        reply.reading =
+            sensors_.read(owner, request.source, request.channels, request.lastKnown, at);
         return reply.reading.error;
     case sensors::Operation::refresh:
         return sensors_.refresh(
-            request.source, request.channels, request.timeoutMs, at, reply.handle);
+            owner, request.source, request.channels, request.timeoutMs, at, reply.handle);
     case sensors::Operation::subscribe:
         return sensors_.subscribe(
-            request.source, request.channels, request.intervalMs, at, reply.handle);
+            owner, request.source, request.channels, request.intervalMs, at, reply.handle);
     case sensors::Operation::unsubscribe: {
-        const auto error = sensors_.unsubscribe(request.handle);
-        return error == Error::stale_handle ? sensors_.cancel(request.handle) : error;
+        const auto error = sensors_.unsubscribe(owner, request.handle);
+        return error == Error::stale_handle ? sensors_.cancel(owner, request.handle) : error;
     }
     }
     return Error::invalid_argument;
 }
-bool Core::sensorEvent(sensors::Event &event) {
-    sensorOwner();
-    return sensors_.takeEvent(event, platform_.monotonic());
+bool Core::sensorEvent(HostBinding &host, sensors::Event &event) {
+    if (!host.service)
+        sensorOwner();
+    if (!caller(host).active || host.closing)
+        return false;
+    return sensors_.takeEvent(host.key, event, platform_.monotonic());
 }
 void Core::stopSensorDiagnostic() {
     if (sensorDiagnostic_.source)

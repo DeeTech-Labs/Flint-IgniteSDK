@@ -3,10 +3,6 @@
     "name": "Package operations",
     "publisher": "deetech",
     "version": 2,
-    "permissions": [
-        "ui.render",
-        "system.locale.read"
-    ],
     "components": [
         {
             "id": "main",
@@ -90,7 +86,17 @@
                     "font": 0,
                     "center": true
                 }
-            ]
+            ],
+            "permissions": [
+                "ui.render",
+                "system.locale.read"
+            ],
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            },
+            "capabilities": 1
         }
     ]
 }

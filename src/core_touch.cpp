@@ -24,16 +24,20 @@ Error Core::edgeInput(InputEvent event) {
         Installed launcher;
         if (packages_.locate("system.launcher", launcher) == Error::ok && launcher.factory) {
             edge_->preview.availableMemory(platform_.available_memory);
-            edge_->preview.host({this,
+            edge_->host = {this, {2, runtime_.consumerGeneration() + 1}, 0, false, false, true};
+            edge_->preview.host({&edge_->host,
                 [](void *context, AppService service, std::string_view key, std::string_view value,
                     AppReply &reply) {
                     if (service != AppService::packages && service != AppService::locale &&
                         service != AppService::theme && service != AppService::settings &&
                         service != AppService::timer)
                         return Error::not_supported;
-                    return static_cast<Core *>(context)->appCall(service, key, value, reply);
+                    auto &host = *static_cast<HostBinding *>(context);
+                    return host.core->appCall(host, service, key, value, reply);
                 },
-                [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); },
+                [](void *context) {
+                    return static_cast<HostBinding *>(context)->core->platform_.monotonic();
+                },
                 true});
             edge_->ready = edge_->preview.launch(launcher, "main", platform_.memory,
                                platform_.capabilities) == Error::ok;

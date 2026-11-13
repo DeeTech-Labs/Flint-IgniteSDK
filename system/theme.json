@@ -3,7 +3,6 @@
     "name": "FlinT Midnight",
     "publisher": "deetech",
     "version": 3,
-    "permissions": [],
     "components": [
         {
             "id": "midnight",
@@ -18,7 +17,14 @@
                 "surface": "2105",
                 "pressed": "39e9",
                 "muted": "a536"
-            }
+            },
+            "permissions": [],
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            },
+            "capabilities": 1
         }
     ]
 }

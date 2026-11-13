@@ -1,4 +1,5 @@
 #pragma once
+#include "background.h"
 #include "contracts.h"
 #include "sensors.h"
 #include <algorithm>
@@ -182,8 +183,14 @@ struct AppHost {
     Error (*authorize)(void *, std::string_view){};
     Error (*sensor)(void *, const sensors::Request &, sensors::Reply &){};
     bool (*sensorEvent)(void *, sensors::Event &){};
-    void (*cancelSensors)(void *){};
+    void (*cancelInstance)(void *){};
     uint8_t outputs{}; // Declared narrow outputs: bit 0 beep, bit 1 temporary brightness.
+    ExecutionKind kind{ExecutionKind::foreground};
+    uint64_t (*microseconds)(void *){};
+    uint32_t minTimerMs{1};
+    Error (*ipc)(void *, const IpcRequest &, IpcReply &){};
+    bool (*ipcEvent)(void *, IpcEvent &){};
+    Error (*services)(void *, const ServiceRequest &, ServiceInfo &){};
 };
 struct LuaDiagnostic {
     Error error{Error::ok};

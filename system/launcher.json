@@ -3,16 +3,6 @@
     "name": "Launcher",
     "publisher": "deetech",
     "version": 3,
-    "permissions": [
-        "ui.render",
-        "packages.list",
-        "system.locale.read",
-        "system.info",
-        "input.focused",
-        "ui.navigation",
-        "time.timer.create",
-        "system.settings.read"
-    ],
     "components": [
         {
             "id": "main",
@@ -265,21 +255,31 @@
                     "text": "${locale:install_flare}",
                     "color": "theme.muted"
                 }
-            ]
+            ],
+            "permissions": [
+                "ui.render",
+                "packages.list",
+                "system.locale.read",
+                "system.info",
+                "input.focused",
+                "ui.navigation",
+                "time.timer.create",
+                "system.settings.read"
+            ],
+            "app_api": 1,
+            "capabilities": 6209,
+            "budget": {
+                "internal": 49152,
+                "external": 0,
+                "instructions": 4096
+            },
+            "logic": {
+                "language": "lua",
+                "path": "scripts/launcher.lua",
+                "includes": [
+                    "scripts/touch.lua"
+                ]
+            }
         }
-    ],
-    "app_api": 1,
-    "capabilities": 6209,
-    "budget": {
-        "internal": 49152,
-        "external": 0,
-        "instructions": 4096
-    },
-    "logic": {
-        "language": "lua",
-        "path": "scripts/launcher.lua",
-        "includes": [
-            "scripts/touch.lua"
-        ]
-    }
+    ]
 }

@@ -3,13 +3,6 @@
     "name": "PC Monitor",
     "publisher": "deetech",
     "version": 1,
-    "permissions": [
-        "ui.render",
-        {
-            "id": "companion.pc.metrics",
-            "scope": "cpu,ram"
-        }
-    ],
     "components": [
         {
             "id": "main",
@@ -38,7 +31,20 @@
                     "text": "${companion.pc.metrics}",
                     "color": "theme.text"
                 }
-            ]
+            ],
+            "permissions": [
+                "ui.render",
+                {
+                    "id": "companion.pc.metrics",
+                    "scope": "cpu,ram"
+                }
+            ],
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            },
+            "capabilities": 1
         }
     ]
 }

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+import re
 import struct
 import time
 import zlib
@@ -105,6 +106,8 @@ class Companion:
     def hello(self, required=65):
         r = Reader(self.request("hello",struct.pack("<HI",1,REVISION)+text("ignite-sdk-device-test")+struct.pack("<Q",required)))
         result = {"protocol":r.number(2),"revision":r.number(),"build":r.text(),"profile":r.text(),"capabilities":r.number(8)}
+        if r.offset != len(r.data) or result["protocol"] != 1 or result["revision"] != REVISION:
+            raise ValueError("incompatible Companion protocol or contract revision")
         if result["capabilities"] & required != required: raise ValueError("device lacks required capabilities")
         self.capabilities = result["capabilities"]
         return result
@@ -136,6 +139,61 @@ class Companion:
         return Reader(self.request("install_commit", timeout=45)).text()
     def launch(self, ident, component="main"):
         self.request("launch",text(ident)+text(component))
+    @staticmethod
+    def _service_identifier(value):
+        if (type(value) is not str or not re.fullmatch(r"[a-z0-9_-][a-z0-9._-]{0,63}", value)
+                or ".." in value or value.endswith(".")):
+            raise ValueError("invalid service identity")
+        return value
+
+    def background_services(self, offset=0, limit=8):
+        if (type(offset) is not int or type(limit) is not int or not 0 <= offset <= 65535
+                or not 1 <= limit <= 8 or offset + limit > 65536):
+            raise ValueError("invalid service page")
+        r = Reader(self.request("services", struct.pack("<HB", offset, limit)))
+        count, more = r.number(1), r.number(1)
+        result = {"max_services": r.number(1), "memory_bytes": r.number(),
+                  "instructions_per_window": r.number(), "native_calls_per_window": r.number(),
+                  "window_ms": r.number(), "low_energy": r.number(1), "more": bool(more), "services": []}
+        if (count > limit or more > 1 or (more and not count)
+                or not 1 <= result["max_services"] <= 4 or not result["memory_bytes"]
+                or not result["instructions_per_window"] or not result["native_calls_per_window"]
+                or not 10 <= result["window_ms"] <= 1000 or result["low_energy"] > 1):
+            raise ValueError("invalid service policy or page")
+        identities = set()
+        for _ in range(count):
+            row = {"package": r.text(), "component": r.text(), "label": r.text(),
+                   "state": r.number(1), "reason": r.number(1), "error": r.number(2),
+                   "instance_id": r.number(8), "generation": r.number(8),
+                   "used_bytes": r.number(), "peak_bytes": r.number(), "reserved_bytes": r.number()}
+            for key in ("callbacks", "instructions", "native_calls", "max_callback_us", "wakeups",
+                        "event_rejected", "event_coalesced"):
+                row[key] = r.number(8)
+            for key in ("execute_granted", "autostart_granted", "autostart"):
+                value = r.number(1)
+                if value > 1: raise ValueError("invalid service boolean")
+                row[key] = bool(value)
+            self._service_identifier(row["package"])
+            self._service_identifier(row["component"])
+            identity = row["package"], row["component"]
+            if (identity in identities or len(row["label"].encode("utf-8")) > 64 or "\0" in row["label"]
+                    or row["state"] > 4 or row["reason"] > 8 or row["error"] > 16
+                    or bool(row["instance_id"]) != bool(row["generation"])):
+                raise ValueError("invalid service row")
+            identities.add(identity)
+            result["services"].append(row)
+        if r.offset != len(r.data): raise ValueError("trailing service data")
+        result["low_energy"] = bool(result["low_energy"])
+        return result
+
+    def service_control(self, action, package, component):
+        if type(action) is not int or not 0 <= action <= 6:
+            raise ValueError("invalid service action")
+        package = self._service_identifier(package)
+        component = self._service_identifier(component)
+        if self.request("service_control", struct.pack("<B", action) + text(package) + text(component)):
+            raise ValueError("trailing service control response")
+
     def sensor_catalog(self):
         r = Reader(self.request("sensor_catalog"))
         count = r.number(1)

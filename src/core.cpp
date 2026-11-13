@@ -1,3 +1,4 @@
+#include "core_background_state.h"
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -40,48 +41,59 @@ static uint64_t generation(const Installed &p) {
     Reader r{std::span(h).subspan(32)};
     return r.n(8);
 }
+static Platform normalizePlatform(Platform platform) {
+#ifdef FLINT_ENABLE_LUA
+    if (platform.background.maxServices && platform.microseconds)
+        platform.capabilities |= CapBackground | CapComponentIpc;
+    else
+#endif
+        platform.capabilities &= ~(CapBackground | CapComponentIpc);
+    return platform;
+}
 Core::Core(std::string root, std::string factory, Platform platform)
-    : platform_(std::move(platform)),
+    : platform_(normalizePlatform(std::move(platform))),
       packages_(std::move(root), std::move(factory), platform_.memory, platform_.capabilities,
           platform_.require_factory, platform_.rename_open_files) {
-    runtime_.host({this,
-        [](void *context, AppService service, std::string_view key, std::string_view value,
-            AppReply &reply) {
-            return static_cast<Core *>(context)->appCall(service, key, value, reply);
-        },
-        [](void *context) { return static_cast<Core *>(context)->platform_.monotonic(); }, true,
-        [](void *context, std::string_view name) {
-            return static_cast<Core *>(context)->authorizeApp(name);
-        },
-        [](void *context, const sensors::Request &request, sensors::Reply &reply) {
-            return static_cast<Core *>(context)->sensorCall(request, reply);
-        },
-        [](void *context, sensors::Event &event) {
-            return static_cast<Core *>(context)->sensorEvent(event);
-        },
-        [](void *context) { static_cast<Core *>(context)->sensors_.cancelAll(); }});
+    foregroundBinding_ = {this, {1, 1}, 0, false, false};
+    runtime_.host(instanceHost(foregroundBinding_));
     sensors_.attach(platform_.sensors);
     sensors_.authorization(
-        [](void *context, sensors::Mask channels) {
+        [](void *context, InstanceKey owner, sensors::Mask channels) {
             auto &core = *static_cast<Core *>(context);
-            for (unsigned i = 0; i < 6; ++i) {
-                if (!(channels & (1u << i)))
-                    continue;
-                const auto result = core.authorizeApp(sensors::permission(sensors::Channel(i)));
-                if (result != Error::ok)
-                    return result;
-            }
+            auto *host = core.binding(owner);
+            if (!host)
+                return Error::permission_denied;
+            for (unsigned i = 0; i < 6; ++i)
+                if (channels & (1u << i)) {
+                    const auto result =
+                        core.authorize(*host, sensors::permission(sensors::Channel(i)));
+                    if (result != Error::ok)
+                        return result;
+                }
             return Error::ok;
         },
         this);
     runtime_.resources().profilingClock(platform_.microseconds);
     runtime_.availableMemory(platform_.available_memory);
 }
-Error Core::appCall(
-    AppService service, std::string_view key, std::string_view value, AppReply &reply) {
+Error Core::appCall(HostBinding &host, AppService service, std::string_view key,
+    std::string_view value, AppReply &reply) {
     // Runtime has checked the canonical declaration; this bridge never accepts app-supplied
     // identity.
-    const auto &manifest = runtime_.manifest();
+    const auto execution = caller(host);
+    if (!execution.manifest || host.closing)
+        return Error::invalid_state;
+    const auto &manifest = *execution.manifest;
+    if (execution.service) {
+        if (service != AppService::time && service != AppService::monotonic &&
+            service != AppService::beep && service != AppService::timer)
+            return Error::not_supported;
+        const auto allowed = authorize(host, servicePermission(service));
+        if (allowed != Error::ok)
+            return allowed;
+        if (service == AppService::beep && authorize(host, "audio.background") != Error::ok)
+            return Error::permission_denied;
+    }
     if (service == AppService::beep || service == AppService::brightness) {
         unsigned first{}, second{};
         const auto a = std::from_chars(key.data(), key.data() + key.size(), first);
@@ -264,8 +276,12 @@ uint64_t Core::nextWake() const {
     const auto at = platform_.monotonic();
     if (install_ || operationDirty_ || (edge_ && edge_->dirty) || !events_.empty())
         return at;
-    auto next = std::min({runtime_.nextWake(), sensors_.nextWake(), systemNext_, nextEpochSave_,
-        startupUntil_, operationUntil_});
+    auto next = std::min({runtime_.nextWake(), sensors_.nextWake(foregroundBinding_.key),
+        backgroundNextWake(), systemNext_, nextEpochSave_, startupUntil_, operationUntil_});
+    // Backend conversion/sampling deadlines must wake an otherwise idle Core. Do not use
+    // Broker's combined wake here: a throttled service's pending event must wait for tokens.
+    if (platform_.sensors)
+        next = std::min(next, platform_.sensors->nextWake());
     if (sensorDiagnostic_.session)
         next = std::min(next, sensorDiagnostic_.expires);
     if (edge_ && edge_->settling)
@@ -282,9 +298,10 @@ uint64_t Core::nextWake() const {
     return next;
 }
 Error Core::persistSettings() {
-    return writeAtomic(packages_.root() + "/settings.bin", valuesBytes(settings_))
-        ? Error::ok
-        : Error::io_error;
+    const auto bytes = valuesBytes(settings_);
+    if (settings_.size() > 128 || bytes.size() > 8192)
+        return Error::resource_exhausted;
+    return writeAtomic(packages_.root() + "/settings.bin", bytes) ? Error::ok : Error::io_error;
 }
 Error Core::persistGrants() {
     Writer w;
@@ -314,7 +331,8 @@ Error Core::revokePackage(std::string_view id) {
     }
     const auto result = changed ? persistGrants() : Error::ok;
     if (runtime_.manifest().id == id)
-        sensors_.cancelAll();
+        sensors_.cancelOwner(foregroundBinding_.key);
+    stopPackageServices(id, ServiceReason::update);
     companion_.valid = false;
     return result;
 }
@@ -402,6 +420,7 @@ Error Core::begin() {
     systemTick(platform_.monotonic());
     activateRole(Role::theme);
     activateRole(Role::locale);
+    backgroundBegin();
     if (platform_.power_on) {
         // A splash must not mask the absence of a usable clock during initial recovery checks.
         error = activateRole(Role::clock);
@@ -517,7 +536,7 @@ void Core::refreshCompanionDemand() {
     }
     bool declared = false;
     if (runtime_.state() == State::active)
-        for (const auto &permission : runtime_.manifest().permissions)
+        for (const auto &permission : runtime_.component().permissions)
             declared |=
                 permission.permission == "companion.pc.metrics" && permission.scope == "cpu,ram";
     const auto state = !declared ? CompanionDemand::no_consumer
@@ -694,7 +713,7 @@ bool Core::tick() {
     const auto at = platform_.monotonic();
     bool logicDirty = false;
     if (runtime_.scripted() && notifiedCatalog_ != packages_.revision()) {
-        for (const auto &permission : runtime_.manifest().permissions)
+        for (const auto &permission : runtime_.component().permissions)
             if (permission.permission == "packages.list") {
                 if (runtime_.postInput({InputKind::catalog_changed, 0, runtime_.generation()}) ==
                     Error::ok)
@@ -715,7 +734,8 @@ bool Core::tick() {
         }
     }
     if (runtime_.scripted() && runtime_.state() == State::active &&
-        (runtime_.nextWake() <= at || sensors_.nextWake() <= at)) {
+        (runtime_.nextWake() <= at || sensors_.nextWake(foregroundBinding_.key) <= at ||
+            foregroundEventsPending())) {
         // Failure is handled by the same factory recovery path as render errors.
         const auto selected = settings_.find("role1");
         const std::string_view selection =
@@ -752,6 +772,7 @@ bool Core::tick() {
         applyUiAction();
         logicDirty = true;
     }
+    backgroundTick(platform_.monotonic());
     const auto minute = now() / 60;
     if (minute != renderedMinute_) {
         renderedMinute_ = minute;
@@ -818,8 +839,8 @@ const Values &Core::bindings() {
         values["locale:" + key] = value;
     for (auto &[key, value] : settings_)
         values["settings:" + key] = value;
-    const auto &m = runtime_.manifest();
-    const bool needsPackages = std::any_of(m.permissions.begin(), m.permissions.end(),
+    const bool needsPackages = std::any_of(runtime_.component().permissions.begin(),
+        runtime_.component().permissions.end(),
         [](const Declaration &d) { return d.permission == "packages.list"; });
     if (needsPackages && launcherCatalog_ != packages_.revision()) {
         launcher_.clear();
@@ -853,7 +874,7 @@ const Values &Core::bindings() {
             : key == "time.date"                          ? "time.read"
                                                           : key;
         bool declared = false;
-        for (auto &declaration : m.permissions)
+        for (auto &declaration : runtime_.component().permissions)
             if (declaration.permission == required)
                 declared = true;
         if (!declared)
@@ -1198,6 +1219,10 @@ Frame Core::handle(const Frame &request, Session &session) {
         case Method::companion_bind:
         case Method::companion_sample:
             error = handleCompanion(request.method, in, session);
+            break;
+        case Method::services:
+        case Method::service_control:
+            error = handleBackground(request.method, in, out, session);
             break;
         case Method::sensor_catalog:
         case Method::sensor_diagnostic:
@@ -1743,6 +1768,7 @@ Frame Core::handle(const Frame &request, Session &session) {
             // Failed durable revocation still blocks access in RAM. It must never look saved.
             sensorOwner();
             sensors_.maintain(platform_.monotonic());
+            reconcileServices();
             if (error == Error::ok)
                 notice(enabled ? "access_allowed" : "access_revoked", p.manifest.name, name, scope);
             break;
@@ -1777,6 +1803,9 @@ Frame Core::handle(const Frame &request, Session &session) {
             auto component = runtime_.component().id;
             if (active)
                 runtime_.stop();
+            error = revokePackage(id);
+            if (error != Error::ok)
+                break;
             icons_.clear();
             error = packages_.rollback(id);
             if (active) {
@@ -1836,7 +1865,8 @@ Frame Core::handle(const Frame &request, Session &session) {
         request.method != Method::packages && request.method != Method::package_read &&
         request.method != Method::permissions_get && request.method != Method::settings_get &&
         request.method != Method::diagnostics && request.method != Method::sensor_catalog &&
-        request.method != Method::sensor_diagnostic && request.method != Method::time_status &&
+        request.method != Method::sensor_diagnostic && request.method != Method::services &&
+        request.method != Method::service_control && request.method != Method::time_status &&
         request.method != Method::companion_subscribe && request.method != Method::companion_bind &&
         request.method != Method::hello && request.method != Method::install_chunk &&
         request.method != Method::install_begin && request.method != Method::session_close) {

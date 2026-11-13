@@ -9,7 +9,7 @@ namespace flint {
 inline constexpr uint16_t ApiVersion = 1, PackageVersion = 1, FaceApiVersion = 1,
                           ProtocolVersion = 1;
 // Development contract identity is independent of the nominal public version.
-inline constexpr uint32_t ContractRevision = 0x20261113;
+inline constexpr uint32_t ContractRevision = 0x20261114;
 inline constexpr uint16_t CompanionDemandVersion = 1;
 inline constexpr uint64_t CapCompanionDemand = 256;
 inline constexpr uint64_t CapSessionClose = 512;
@@ -33,7 +33,8 @@ enum class Error : uint16_t {
     integrity_failed,
     invalid_state,
     stale_handle,
-    execution_limit
+    execution_limit,
+    conflict
 };
 enum class Component : uint16_t {
     app = 1,
@@ -59,6 +60,11 @@ enum class State : uint8_t { empty, inactive, active, suspended };
 struct MemoryBudget {
     uint32_t internal_bytes{}, external_bytes{}, instructions{};
 };
+struct InstanceKey {
+    uint64_t id{}, generation{};
+    friend constexpr bool operator==(InstanceKey, InstanceKey) = default;
+};
+enum class ExecutionKind : uint8_t { foreground, service };
 struct Identity {
     uint16_t protocol{ProtocolVersion};
     uint32_t revision{ContractRevision};

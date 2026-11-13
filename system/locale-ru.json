@@ -3,7 +3,6 @@
     "name": "Русский",
     "publisher": "deetech",
     "version": 3,
-    "permissions": [],
     "components": [
         {
             "id": "ru",
@@ -69,7 +68,14 @@
                 "install_flare": "Установите через Flare",
                 "removing": "Удаление данных",
                 "wait": "Подождите"
-            }
+            },
+            "permissions": [],
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            },
+            "capabilities": 1
         }
     ]
 }

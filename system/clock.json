@@ -3,11 +3,6 @@
     "name": "Clock",
     "publisher": "deetech",
     "version": 3,
-    "permissions": [
-        "ui.render",
-        "time.read",
-        "system.locale.read"
-    ],
     "components": [
         {
             "id": "main",
@@ -46,10 +41,20 @@
                     "extra": 1,
                     "color": "theme.muted"
                 }
-            ]
+            ],
+            "permissions": [
+                "ui.render",
+                "time.read",
+                "system.locale.read"
+            ],
+            "capabilities": 3,
+            "budget": {
+                "internal": 24576,
+                "external": 0,
+                "instructions": 4096
+            }
         }
     ],
-    "capabilities": 3,
     "icons": {
         "main": 100,
         "mask": 101

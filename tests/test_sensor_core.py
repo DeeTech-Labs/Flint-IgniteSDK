@@ -54,19 +54,53 @@ def main():
     temporary.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sensor-core-", dir=temporary) as directory:
         root = Path(directory)
-        project = {"id": "test.sensors", "name": "Sensors", "publisher": "tests", "version": 1,
-            "app_api": 1, "sensor_api": 1, "capabilities": 67,
-            "budget": {"internal": 98304, "instructions": 12000},
-            "permissions": ["ui.render", "input.focused", "time.timer.create", "sensors.temperature", "ui.brightness"],
-            "logic": {"language": "lua", "path": "main.lua"},
-            "components": [{"id": "main", "type": "app", "ui": [
-                {"kind": "rect", "w": 280, "h": 240},
-                {"kind": "text", "text": "load=${app.load};loading_update=${app.loading_update};result=${app.result};events=${app.events};filtered=${app.filtered};quota=${app.quota};handle=${app.handle};"}]}]}
+        project = {
+            'id': 'test.sensors',
+            'name': 'Sensors',
+            'publisher': 'tests',
+            'version': 1,
+            'components': [
+                {
+                    'id': 'main',
+                    'type': 'app',
+                    'ui': [
+                        {
+                            'kind': 'rect',
+                            'w': 280,
+                            'h': 240
+                        },
+                        {
+                            'kind': 'text',
+                            'text': 'load=${app.load};loading_update=${app.loading_update};result=${app.result};events=${app.events};filtered=${app.filtered};quota=${app.quota};handle=${app.handle};'
+                        }
+                    ],
+                    'capabilities': 67,
+                    'sensor_api': 1,
+                    'app_api': 1,
+                    'logic': {
+                        'language': 'lua',
+                        'path': 'main.lua'
+                    },
+                    'budget': {
+                        'internal': 98304,
+                        'instructions': 12000,
+                        'external': 0
+                    },
+                    'permissions': [
+                        'ui.render',
+                        'input.focused',
+                        'time.timer.create',
+                        'sensors.temperature',
+                        'ui.brightness'
+                    ]
+                }
+            ]
+        }
         def package(name, script, permissions=None):
             selected = copy.deepcopy(project)
             selected["id"] = "test." + name
             if permissions is not None:
-                selected["permissions"] = permissions
+                selected["components"][0]["permissions"] = permissions
             (root / "main.lua").write_text(script, encoding="utf-8")
             (root / (name + ".ignit")).write_bytes(compile_project(selected, root))
         package("sensors", MAIN)

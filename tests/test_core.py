@@ -57,58 +57,101 @@ def main():
         image.save(root / "icon.png")
         font = ROOT / "tests/assets/Lato-Regular.ttf"
         custom = {
-            "id": "test.resources",
-            "name": "Resources",
-            "publisher": "tests",
-            "version": 1,
-            "capabilities": 3,
-            "permissions": ["ui.render", "ui.resources"],
-            "components": [
+            'id': 'test.resources',
+            'name': 'Resources',
+            'publisher': 'tests',
+            'version': 1,
+            'components': [
                 {
-                    "id": "main",
-                    "type": "app",
-                    "ui": [
-                        {"kind": "rect", "w": 280, "h": 240, "color": "#000000"},
+                    'id': 'main',
+                    'type': 'app',
+                    'ui': [
                         {
-                            "kind": "text",
-                            "x": 50,
-                            "y": 80,
-                            "font": 4,
-                            "text": "Test",
-                            "color": "#ffffff",
+                            'kind': 'rect',
+                            'w': 280,
+                            'h': 240,
+                            'color': '#000000'
                         },
                         {
-                            "kind": "image",
-                            "x": 4,
-                            "y": 4,
-                            "w": 16,
-                            "h": 16,
-                            "resource": 5,
+                            'kind': 'text',
+                            'x': 50,
+                            'y': 80,
+                            'font': 4,
+                            'text': 'Test',
+                            'color': '#ffffff'
                         },
+                        {
+                            'kind': 'image',
+                            'x': 4,
+                            'y': 4,
+                            'w': 16,
+                            'h': 16,
+                            'resource': 5
+                        }
                     ],
+                    'capabilities': 3,
+                    'permissions': ['ui.render', 'ui.resources'],
+                    'budget': {
+                        'internal': 24576,
+                        'external': 0,
+                        'instructions': 4096
+                    }
                 }
             ],
-            "resources": [
+            'resources': [
                 {
-                    "id": 4,
-                    "path": "font.ttf",
-                    "format": "font",
-                    "size": 20,
-                    "characters": "Test",
+                    'id': 4,
+                    'path': 'font.ttf',
+                    'format': 'font',
+                    'size': 20,
+                    'characters': 'Test'
                 },
-                {"id": 5, "path": "icon.png", "format": "image"},
-            ],
+                {
+                    'id': 5,
+                    'path': 'icon.png',
+                    'format': 'image'
+                }
+            ]
         }
         (root / "font.ttf").write_bytes(font.read_bytes())
         (root / "resources.ignit").write_bytes(compile_project(custom, root))
         bindings = {
-            "id": "test.bindings", "name": "Bindings", "publisher": "tests", "version": 1,
-            "permissions": ["ui.render", "ui.resources"],
-            "components": [{"id": "main", "type": "app", "ui": [
-                {"kind": "rect", "w": 280, "h": 240, "color": "#000000"},
-                {"kind": "text", "text": "X${input}Y:${resource:6}:${missing}", "color": "#ffffff"}
-            ]}],
-            "resources": [{"id": 6, "path": "value.txt"}],
+            'id': 'test.bindings',
+            'name': 'Bindings',
+            'publisher': 'tests',
+            'version': 1,
+            'components': [
+                {
+                    'id': 'main',
+                    'type': 'app',
+                    'ui': [
+                        {
+                            'kind': 'rect',
+                            'w': 280,
+                            'h': 240,
+                            'color': '#000000'
+                        },
+                        {
+                            'kind': 'text',
+                            'text': 'X${input}Y:${resource:6}:${missing}',
+                            'color': '#ffffff'
+                        }
+                    ],
+                    'permissions': ['ui.render', 'ui.resources'],
+                    'budget': {
+                        'internal': 24576,
+                        'external': 0,
+                        'instructions': 4096
+                    },
+                    'capabilities': 1
+                }
+            ],
+            'resources': [
+                {
+                    'id': 6,
+                    'path': 'value.txt'
+                }
+            ]
         }
         (root / "value.txt").write_text("resource", encoding="utf-8")
         (root / "bindings.ignit").write_bytes(compile_project(bindings, root))

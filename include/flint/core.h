@@ -14,6 +14,9 @@ inline constexpr uint64_t HostLogicCapabilities =
 inline constexpr uint64_t HostLogicCapabilities = 0;
 #endif
 struct Platform {
+    BackgroundPolicy background;
+    std::function<MemoryBudget()> background_available_memory;
+    std::function<bool()> background_low_energy;
     std::string build_id;
     // Stable package admissibility limit, independent of temporary heap pressure.
     MemoryBudget memory{48 * 1024, 0, 4096};
@@ -65,13 +68,50 @@ struct PermissionRecord {
     bool enabled{};
 };
 class Core {
+    struct BackgroundState;
+    struct HostBinding {
+        Core *core{};
+        InstanceKey key{};
+        size_t slot{};
+        bool service{}, closing{}, preview{};
+    };
+    struct Caller {
+        const Manifest *manifest{};
+        const ComponentInfo *component{};
+        Principal principal{};
+        InstanceKey key{};
+        bool active{}, service{}, system{};
+    };
     Platform platform_;
     PackageManager packages_;
     sensors::Broker sensors_;
     Runtime runtime_;
+    HostBinding foregroundBinding_;
+    std::unique_ptr<BackgroundState> background_;
+    AppHost instanceHost(HostBinding &);
+    void cancelInstance(HostBinding &);
+    Caller caller(HostBinding &);
+    HostBinding *binding(InstanceKey);
+    Error authorize(
+        HostBinding &, std::string_view, std::string_view scope = {}, uint64_t session = 0);
+    Error authorizeCaller(
+        const Caller &, std::string_view, std::string_view scope = {}, uint64_t session = 0);
+    Error ipcCall(HostBinding &, const IpcRequest &, IpcReply &);
+    bool ipcEvent(HostBinding &, IpcEvent &);
+    Error handleBackground(Method, Reader &, Writer &, const Session &);
+    bool backgroundTick(uint64_t);
+    void faultService(std::string_view, Error);
+    uint64_t backgroundNextWake() const;
+    bool foregroundEventsPending() const;
+    void stopPackageServices(std::string_view, ServiceReason);
+    void reconcileServices();
+    void backgroundBegin();
+    Error serviceControl(HostBinding &, const ServiceRequest &, ServiceInfo &);
+    Error serviceRow(uint16_t, ServiceInfo &);
+    void loadSharedState(std::string_view);
     Error authorizeApp(std::string_view name, std::string_view scope = {}, uint64_t session = 0);
-    Error sensorCall(const sensors::Request &, sensors::Reply &);
-    bool sensorEvent(sensors::Event &);
+    Error sensorCall(HostBinding &, const sensors::Request &, sensors::Reply &);
+    bool sensorEvent(HostBinding &, sensors::Event &);
     void sensorOwner();
     struct SensorDiagnostic {
         uint64_t session{}, expires{}, next{}, lastSample{}, lastGeneration{};
@@ -132,6 +172,7 @@ class Core {
     void applyUiAction();
     struct EdgeNavigation {
         Runtime preview;
+        HostBinding host;
         FlintRender::Scene source, target;
         uint64_t generation{}, at{}, sampleAt{}, started{}, nextFrame{}, integratedAt{};
         int64_t position{280000}, springVelocity{};
@@ -172,8 +213,8 @@ class Core {
         OperationPhase phase, uint32_t done, uint32_t total, Error error = Error::ok);
     bool operationTick();
     Error operationRender(FlintRender::Scene &scene);
-    Error appCall(
-        AppService service, std::string_view key, std::string_view value, AppReply &reply);
+    Error appCall(HostBinding &, AppService service, std::string_view key, std::string_view value,
+        AppReply &reply);
     Error activateRole(Role role, std::string_view selection = {});
     Error persistSettings();
     Error persistGrants();
@@ -204,6 +245,9 @@ class Core {
 
 public:
     Core(std::string storage, std::string factory, Platform platform);
+    ~Core();
+    Error startService(std::string_view package, std::string_view component);
+    Error stopService(std::string_view package, ServiceReason reason = ServiceReason::user);
     Error begin();
     Frame handle(const Frame &request, Session &session);
     // Owner-thread dispatch: a deferred install reply is delivered by takeReply().

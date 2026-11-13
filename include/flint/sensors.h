@@ -1,11 +1,15 @@
 #pragma once
 #include <array>
+#include <flint/background.h>
 #include <flint/contracts.h>
 #include <flint/sensor_registry.h>
 #include <span>
 
 namespace flint::sensors {
 inline constexpr size_t MaxSources = 16, MaxSubscriptions = 8, MaxRefresh = 8;
+inline constexpr size_t MaxConsumers = 1 + MaxBackgroundServices;
+inline constexpr size_t MaxTotalSubscriptions = MaxConsumers * MaxSubscriptions,
+                        MaxTotalRefresh = MaxConsumers * MaxRefresh;
 inline constexpr uint64_t Capability = 8192;
 using Mask = uint8_t;
 using SourceId = uint16_t;
@@ -88,33 +92,38 @@ struct Reply {
 };
 class Broker {
 public:
-    using Authorize = Error (*)(void *, Mask);
+    using Authorize = Error (*)(void *, InstanceKey, Mask);
     void attach(Backend *backend);
     void authorization(Authorize callback, void *context) {
         authorize_ = callback;
         context_ = context;
     }
-    void owner(uint64_t runtime, uint64_t consumer, bool active = true);
+    // Trusted Core lifecycle registration. A newer generation replaces only the same id.
+    Error activate(InstanceKey);
+    void cancelOwner(InstanceKey);
     void cancelAll();
     Error begin();
     std::span<const Source> catalog() const {
         return {sources_.data(), count_};
     }
-    Read read(SourceId, Mask, bool lastKnown, uint64_t now) const;
+    Read read(InstanceKey, SourceId, Mask, bool lastKnown, uint64_t now) const;
     Read inspect(SourceId, Mask, bool lastKnown, uint64_t now) const;
-    Error subscribe(SourceId, Mask, uint32_t intervalMs, uint64_t now, uint64_t &handle);
-    Error unsubscribe(uint64_t handle);
-    Error refresh(SourceId, Mask, uint64_t timeoutMs, uint64_t now, uint64_t &handle);
-    Error cancel(uint64_t handle);
+    Error subscribe(
+        InstanceKey, SourceId, Mask, uint32_t intervalMs, uint64_t now, uint64_t &handle);
+    Error unsubscribe(InstanceKey, uint64_t handle);
+    Error refresh(InstanceKey, SourceId, Mask, uint64_t timeoutMs, uint64_t now, uint64_t &handle);
+    Error cancel(InstanceKey, uint64_t handle);
     // Trusted system demand bypasses application authorization; one slot per source.
     Error systemDemand(SourceId, Mask, uint32_t intervalMs, uint8_t consumer = 0);
     void maintain(uint64_t now);
     Error ingest(const Sample &, uint64_t now);
-    bool takeEvent(Event &, uint64_t now);
+    bool takeEvent(InstanceKey, Event &, uint64_t now);
+    uint64_t nextWake(InstanceKey) const;
     uint64_t nextWake() const;
 
 private:
     struct Entry {
+        InstanceKey owner{};
         uint64_t handle{}, deadline{}, after{}, generation{}, next{};
         SourceId source{};
         Mask channels{};
@@ -122,22 +131,23 @@ private:
         bool pending{}, finished{}, expired{};
     };
     size_t index(SourceId, Mask) const;
-    Error authorized(Mask) const;
+    bool active(InstanceKey) const;
+    Error authorized(InstanceKey, Mask) const;
     uint64_t allocate();
     void aggregate();
     void notify(Entry &, bool);
     Backend *backend_{};
     Authorize authorize_{};
     void *context_{};
-    uint64_t runtime_{}, consumer_{}, serial_{};
-    bool active_{};
+    uint64_t serial_{};
+    std::array<InstanceKey, MaxConsumers> owners_{};
     size_t count_{};
     std::array<Source, MaxSources> sources_{};
     std::array<Sample, MaxSources> cache_{}, good_{};
     std::array<uint64_t, MaxSources> cooldown_{};
     std::array<std::array<Demand, MaxSources>, 2> system_{};
     std::array<Demand, MaxSources> sent_{};
-    std::array<Entry, MaxSubscriptions> subscriptions_{};
-    std::array<Entry, MaxRefresh> refreshes_{};
+    std::array<Entry, MaxTotalSubscriptions> subscriptions_{};
+    std::array<Entry, MaxTotalRefresh> refreshes_{};
 };
 } // namespace flint::sensors

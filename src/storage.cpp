@@ -585,8 +585,11 @@ Error PreparedInstall::advance(uint32_t budget) {
         const bool factory = state.phase == Phase::factory_package;
         error = state.auxiliaryValidation.advance(budget);
         if (error == Error::ok && state.auxiliaryValidation.done()) {
+            // Read-only factory identities remain protected even when this model disables
+            // optional background execution. This is metadata validation, never admission.
             error = state.auxiliaryApplication.begin(state.auxiliaryPackage,
-                state.auxiliaryManifest, state.available, state.capabilities);
+                state.auxiliaryManifest, state.available,
+                factory ? state.capabilities | CapBackground | CapComponentIpc : state.capabilities);
             state.phase = factory ? Phase::factory_application : Phase::current_application;
         }
         // A broken user reference may be repaired; a broken read-only factory

@@ -34,11 +34,7 @@ market admission, or battery-life guarantees.
 
 ## Lua application
 
-`logic: {"language": "lua", "path": "main.lua"}` adds one text-source section.
-A Lua package has exactly one app/watchface component, capability bit 64, 48..144 KiB
-of declared internal memory and 1..100000 Lua instructions per callback. Source is
-limited to 16 KiB. Binary chunks are rejected. The current development contract is
-0x20261113; regenerate packages using this SDK. There is no previous-format loader.
+`components[].logic: {"language":"lua","path":"main.lua"}` selects an explicit text Lua section for that component. `budget`, `permissions`, `capabilities`, `app_api`, `sensor_api` and `ipc_api` also belong to the component; the package union grants no implicit runtime privileges. UI app/watchface and at most one service can use distinct sources and separate VMs. Each Lua VM declares 48..144 KiB and 1..100000 instructions, with source limited to 16 KiB; service admission is additionally constrained by the model quantum/pool. FLM3 and exact revision `0x20261114` require rebuilding all packages/consumers. Envelope/API/Companion versions remain 1. See [background services and migration](BACKGROUND-SERVICES.md).
 
 The source returns a table with `update(dt_ms, pressed)`. It is called once at load
 with zero elapsed time, then explicitly by Runtime or the Core scheduler. Elapsed
@@ -116,13 +112,13 @@ Marketplace signatures and publication remain separate work.
 
 ## Application API 1: input, state and services
 
-`"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua project's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Current revision `0x20261113` requires FLM2/FLIM v2 and rebuilding all packages and consumers. No legacy decoder is provided; see [FLIM](FLIM.md). C++ ABI compatibility is not preserved.
+`"app_api": 1` adds mandatory capability `128` (`CapAppApi`) to a Lua component's requirements. Lua still requires bit `64`; `capabilities: 65` plus `app_api: 1` therefore compiles to `193`. Older runtimes reject the missing capability. Current revision `0x20261114` requires FLM3/FLIM v2 and rebuilding all packages and consumers. No legacy decoder is provided; see [FLIM](FLIM.md). C++ ABI compatibility is not preserved.
 
 New functions require `CapAppApi`. Invalid argument counts/types, ranges and UTF-8 terminate the handler with a diagnostic. Service/access failures return numeric `flint::Error` codes: 0=ok, 4=not_supported, 5=permission_denied, 7=source_unavailable, 9=quota_exceeded; see `include/flint/contracts.h` for the complete enumeration. No standard libraries or unrestricted `require`, `debug`, `io`, `os` are exposed.
 
 ### Events and lifecycle
 
-The returned application table must still contain `update(dt_ms, pressed)`. An optional `event(kind, value)` handles `press`, `release`, `hold`, `rotate`, `focus_lost`, `focus_gained`, `timer`, `suspend`, `resume`. Values are signed i32; timer values are IDs 1..8, suspend/resume use 0. Callbacks run synchronously in the Core loop. There is no destroy callback: persist important state in advance. Events do not execute in the background.
+The returned application table must still contain `update(dt_ms, pressed)`. An optional `event(kind, value)` handles `press`, `release`, `hold`, `rotate`, `focus_lost`, `focus_gained`, `timer`, `suspend`, `resume`. Values are signed i32; timer values are IDs 1..8, suspend/resume use 0. Callbacks run synchronously in the Core loop. There is no destroy callback: persist important state in advance. These focused input events belong to the foreground VM; background services have a separate lifecycle and no input API.
 
 The OS adapter calls `Core::postInput({kind, value, runtime.generation()})`. An active Lua app and an empty-scope `input.focused` declaration are required. The queue holds 16 events; overflow returns quota_exceeded and mismatched generations return stale_handle. Input after focus_lost is discarded until focus_gained. Old-run events never cross a restart; suspend/stop clear the queue. Legacy packages receive presses through `update(0, true)`. OS owns physical input recognition/debounce; Flare owns QML presentation.
 
@@ -144,7 +140,7 @@ The OS adapter calls `Core::postInput({kind, value, runtime.generation()})`. An 
 - `system.power.status`: passes the key to the read-only `Platform::power` adapter; absent adapter means not_supported. Device profiles define supported fields; SDK supplies no fake measurements.
 - `system.locale.read`, `system.theme.read`, `system.settings.read`: string by key from active locale/theme/system settings; missing key means source_unavailable.
 
-Each requires its same-named empty-scope declaration. Runtime checks capability, active/initializing state and the canonical permission class before calling Core. Only these automatic services are exposed; persistent/session/action/restricted services are not dispatched through this bridge. Unknown names return not_supported. Registry membership does not implement a service. App-supplied principals/grants are never accepted.
+Each requires its same-named empty-scope declaration. Runtime checks capability, active/initializing state and the canonical permission class before calling Core. The listed reads check component declarations; narrow outputs additionally use current Core authorization, including session ui.brightness. Registry entries do not expose arbitrary services. Unknown names return not_supported. Registry membership does not implement a service. App-supplied principals/grants are never accepted.
 
 - `ignite.storage_get(key)` returns string/error or nil/error.
 - `ignite.storage_get(key, default_integer)` parses saved i32 text; missing key or implementation returns the default and corresponding error. Invalid numeric contents return nil/invalid_argument; corrupted storage is not hidden by defaults.
@@ -188,13 +184,13 @@ Touch packages declare `app_api: 1`, `CapTouchEvents=2048` and `CapInteractiveUi
 - `ignite.action('role', 'clock'|'launcher'|'settings')` and `ignite.action('launch', target)` return an error and queue navigation after Lua returns. A focused release/up callback is required; load/update/timer calls return `user_interaction_required`. Deferred actions are generation-bound.
 - `ignite.action('system', command)` additionally requires a factory package with the active Settings role. Commands are `ble_toggle`, `offset_up`, `offset_down`, `language`, `motion`. Claiming Settings metadata does not grant a user package this authority.
 
-Host compilation supports `logic.includes`: at most eight relative UTF-8 Lua sources within the project root, concatenated before `logic.path`. The original 16 KiB source bound includes generated UI IDs. Runtime gains neither `require` nor filesystem access. Base Lua screens declare 48 KiB internal memory and 4096 instructions; platform limits are unchanged.
+Host compilation supports `components[].logic.includes`: at most eight relative UTF-8 Lua sources within the project root, concatenated before `components[].logic.path`. The original 16 KiB source bound includes generated UI IDs. Runtime gains neither `require` nor filesystem access. Base Lua screens declare 48 KiB internal memory and 4096 instructions; platform limits are unchanged.
 
 Persistent `reduce_motion` accepts `0/1` through standard `settings_get/settings_set`. It disables automatic inertia and introductory movement while preserving direct finger tracking. Flare Preview and physical controllers need corresponding event adapters; SDK host tests inject events directly through Core.
 
 ## Application icons
 
-See [FLIM.md](FLIM.md) for FLIM v2, FLM2 manifest resources, theme selection, converter commands and bounded memory. Example: `examples/icons/project.json`. `ignite.catalog(index)` returns `name, target, error`; the placeholder symbol is removed. `catalog_icon` nodes support `ignite.set(node, "catalog", index)`. All consumers and packages require revision `0x20261113`.
+See [FLIM.md](FLIM.md) for FLIM v2, FLM3 manifest resources, theme selection, converter commands and bounded memory. Example: `examples/icons/project.json`. `ignite.catalog(index)` returns `name, target, error`; the placeholder symbol is removed. `catalog_icon` nodes support `ignite.set(node, "catalog", index)`. All consumers and packages require revision `0x20261114`.
 
 Factory Clock and Settings provide authored color INDEX8 icons and separate A4 masks. Source PNGs live in `system/assets/`; reproduce their geometry with `python tools/build_system_icons.py`, then rebuild packages using `python tools/build_system.py`. These run on a Pillow-equipped host, never in firmware. Read-only numeric `utc_offset_minutes` under `system.settings.read` provides a typed UTC value; the original string `utc_offset` remains available.
 
@@ -217,4 +213,7 @@ Unchanged outputs retain their timestamps. Changed files publish through individ
 
 `build_system_icons.py --output <dir>` and `build_builtin_fonts.py --font-dir <fonts> --output <dir>` also default to `build/generated/`. Updating maintained PNG/font sources requires a separate reviewed copy, never an implicit build side effect. Existing source factory/sample packages and headers remain snapshots for older consumers; new CMake builds neither refresh them nor use them instead of current generated artifacts.
 
-Current touch/UI contracts use `ContractRevision=0x20261113` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. Flare still reading source `factory/` and `examples/` requires a separate resource integration migration; the portable `Flint::Platform` target already uses the new scheme.
+Current touch/UI contracts use `ContractRevision=0x20261114` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. Flare still reading source `factory/` and `examples/` requires a separate resource integration migration; the portable `Flint::Platform` target already uses the new scheme.
+
+
+[Background services, FLM3 component budgets, IPC and atomic shared state](BACKGROUND-SERVICES.md).

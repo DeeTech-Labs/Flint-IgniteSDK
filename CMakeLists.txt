@@ -13,6 +13,8 @@ add_library(flint_platform STATIC
     src/lua_app.cpp
     src/runtime.cpp
     src/sensors.cpp
+    src/service_runtime.cpp
+    src/core_background.cpp
     src/core_hardware.cpp
     src/core_sensors.cpp
     src/core.cpp
@@ -233,4 +235,22 @@ if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS AND FLINT_ENABLE_LUA)
         $<TARGET_FILE:ignite-run> $<TARGET_FILE:ignite-check>)
     set_tests_properties(sensor_tooling PROPERTIES TIMEOUT 30 ENVIRONMENT
         "PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
+    add_test(NAME background_tooling COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_background_tooling.py
+        $<TARGET_FILE:ignite-run> $<TARGET_FILE:ignite-check>)
+    set_tests_properties(background_tooling PROPERTIES TIMEOUT 60 ENVIRONMENT
+        "PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
+endif()
+
+if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
+    add_executable(service_runtime_tests tests/service_runtime.cpp)
+    target_link_libraries(service_runtime_tests PRIVATE flint_platform)
+    add_test(NAME service_isolation COMMAND service_runtime_tests "${FLINT_EXAMPLES_DIR}/thermometer-service/sample.ignit")
+    set_tests_properties(service_isolation PROPERTIES TIMEOUT 15)
+    add_executable(background_core_tests tests/background_core.cpp)
+    target_link_libraries(background_core_tests PRIVATE flint_platform)
+    add_test(NAME background_core COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_background_core.py $<TARGET_FILE:background_core_tests>)
+    set_tests_properties(background_core PROPERTIES TIMEOUT 60 ENVIRONMENT
+        "FLINT_FACTORY_DIR=${FLINT_FACTORY_DIR};PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
 endif()

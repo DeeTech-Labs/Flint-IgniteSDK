@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <charconv>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,11 +17,13 @@ namespace flint {
 struct LuaApp::Impl {
     size_t used{}, peak{}, limit{};
     uint32_t instructions{}, remaining{}, nativeCalls{};
+    uint32_t dispatchInstructions{}, nativeLimit{32}, wallCheck{};
+    uint64_t dispatchStarted{}, deadline{}, nativeWall{}, maxNative{};
     Error error{Error::ok};
     FlintRender::Scene *scene{};
     std::array<LuaValue, 16> values{};
     size_t count{};
-    bool changed{}, batch{};
+    bool changed{}, batch{}, loading{true};
     AppHost host{};
     LuaDiagnostic *diagnostic{};
     uint32_t hidden{};
@@ -28,6 +31,7 @@ struct LuaApp::Impl {
     int32_t pendingValue{};
     InputEvent pendingInput{};
     const sensors::Event *pendingSensor{}; // Borrowed only for the protected synchronous callback.
+    const IpcEvent *pendingIpc{};
     uint64_t clock{}, lastUpdate{}, nextUpdate{}, interval{33};
     struct Timer {
         uint64_t due{}, period{};
@@ -75,6 +79,40 @@ struct LuaApp::Impl {
             luaL_error(state, "instruction limit");
         }
         --app.remaining;
+        if (!(++app.wallCheck & 63) && app.deadline && app.host.microseconds &&
+            app.host.microseconds(app.host.context) >= app.deadline) {
+            app.error = Error::execution_limit;
+            luaL_error(state, "execution deadline");
+        }
+    }
+    static bool nativeBegin(lua_State *state, uint64_t &started) {
+        auto &app = self(state);
+        if (app.nativeCalls >= app.nativeLimit) {
+            if (app.host.kind == ExecutionKind::service) {
+                app.error = Error::execution_limit;
+                luaL_error(state, "native call limit");
+            }
+            return false;
+        }
+        ++app.nativeCalls;
+        started = app.host.microseconds ? app.host.microseconds(app.host.context) : 0;
+        if (app.deadline && started >= app.deadline) {
+            app.error = Error::execution_limit;
+            luaL_error(state, "execution deadline");
+        }
+        return true;
+    }
+    static void nativeEnd(lua_State *state, uint64_t started) {
+        auto &app = self(state);
+        const auto ended =
+            app.host.microseconds ? app.host.microseconds(app.host.context) : started;
+        const auto elapsed = ended >= started ? ended - started : 0;
+        app.maxNative = std::max(app.maxNative, elapsed);
+        if ((app.nativeWall && elapsed > app.nativeWall) ||
+            (app.deadline && ended >= app.deadline)) {
+            app.error = Error::execution_limit;
+            luaL_error(state, "native execution deadline");
+        }
     }
     static void arguments(lua_State *state, int expected) {
         if (lua_gettop(state) != expected)
@@ -99,12 +137,16 @@ struct LuaApp::Impl {
     static Error call(lua_State *state, AppService service, std::string_view key,
         std::string_view value, AppReply &reply) {
         auto &app = self(state);
+        if (app.host.kind == ExecutionKind::service && app.loading)
+            return Error::invalid_state;
         if (!app.host.enabled || !app.host.call)
             return Error::not_supported;
-        if (app.nativeCalls == 32)
+        uint64_t started{};
+        if (!nativeBegin(state, started))
             return Error::quota_exceeded;
-        ++app.nativeCalls;
-        return app.host.call(app.host.context, service, key, value, reply);
+        const auto result = app.host.call(app.host.context, service, key, value, reply);
+        nativeEnd(state, started);
+        return result;
     }
     static int set(lua_State *state) {
         arguments(state, 3);
@@ -352,7 +394,8 @@ struct LuaApp::Impl {
     static int schedule(lua_State *state) {
         arguments(state, 1);
         const auto delay = integer(state, 1);
-        if (delay < 0 || delay > 86400000)
+        if (delay < 0 || delay > 86400000 ||
+            (delay && uint64_t(delay) < self(state).host.minTimerMs))
             return luaL_error(state, "invalid update interval");
         AppReply reply;
         const auto error = call(state, AppService::timer, {}, {}, reply);
@@ -366,7 +409,9 @@ struct LuaApp::Impl {
     static int timer(lua_State *state) {
         arguments(state, 3);
         const auto id = integer(state, 1), delay = integer(state, 2);
-        if (id < 1 || id > 8 || delay < 0 || delay > 86400000 || lua_type(state, 3) != LUA_TBOOLEAN)
+        if (id < 1 || id > 8 || delay < 0 || delay > 86400000 ||
+            (delay && uint64_t(delay) < self(state).host.minTimerMs) ||
+            lua_type(state, 3) != LUA_TBOOLEAN)
             return luaL_error(state, "invalid timer");
         AppReply reply;
         const auto error = call(state, AppService::timer, {}, {}, reply);
@@ -450,17 +495,21 @@ struct LuaApp::Impl {
     static Error sensorCall(
         lua_State *state, const sensors::Request &request, sensors::Reply &reply) {
         auto &app = self(state);
+        if (app.host.kind == ExecutionKind::service && app.loading)
+            return Error::invalid_state;
         if (!app.host.enabled || !app.host.sensor)
             return Error::not_supported;
-        if (app.nativeCalls >= 32)
+        uint64_t started{};
+        if (!nativeBegin(state, started))
             return Error::quota_exceeded;
-        ++app.nativeCalls;
-        return app.host.sensor(app.host.context, request, reply);
+        const auto result = app.host.sensor(app.host.context, request, reply);
+        nativeEnd(state, started);
+        return result;
     }
     static int sensorCatalog(lua_State *state) {
         arguments(state, 1);
         const auto index = integer(state, 1);
-        if (index < 1 || index > sensors::MaxSources)
+        if (index < 1 || uint64_t(index) > sensors::MaxSources)
             return luaL_error(state, "invalid catalog index");
         sensors::Request request;
         request.operation = sensors::Operation::catalog;
@@ -580,8 +629,286 @@ struct LuaApp::Impl {
         lua_call(state, 5, 0);
         return 0;
     }
+    template <size_t N>
+    static void boundedName(lua_State *state, int index, std::array<char, N> &output) {
+        const auto text = string(state, index);
+        if (text.empty() || text.size() >= N ||
+            std::any_of(text.begin(), text.end(), [](unsigned char c) {
+                return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-');
+            }))
+            luaL_error(state, "invalid IPC name");
+        std::copy(text.begin(), text.end(), output.begin());
+    }
+    static IpcValue ipcValue(lua_State *state, int index) {
+        IpcValue value;
+        const auto type = lua_type(state, index);
+        if (type == LUA_TBOOLEAN) {
+            value.kind = IpcValueKind::boolean;
+            value.integer = lua_toboolean(state, index);
+        } else if (type == LUA_TNUMBER && lua_isinteger(state, index)) {
+            value.kind = IpcValueKind::integer;
+            value.integer = lua_tointeger(state, index);
+        } else if (type == LUA_TNUMBER) {
+            value.kind = IpcValueKind::number;
+            value.number = lua_tonumber(state, index);
+            if (!std::isfinite(value.number))
+                luaL_error(state, "finite IPC number required");
+        } else if (type == LUA_TSTRING) {
+            const auto text = string(state, index);
+            if (text.size() > 96 || text.find('\0') != std::string_view::npos || !appText(text))
+                luaL_error(state, "IPC text exceeds 96 UTF-8 bytes");
+            value.kind = IpcValueKind::text;
+            value.size = uint8_t(text.size());
+            std::copy(text.begin(), text.end(), value.text.begin());
+        } else
+            luaL_error(state, "IPC scalar value required");
+        return value;
+    }
+    static void pushIpcValue(lua_State *state, const IpcValue &value) {
+        switch (value.kind) {
+        case IpcValueKind::boolean:
+            lua_pushboolean(state, value.integer != 0);
+            break;
+        case IpcValueKind::integer:
+            lua_pushinteger(state, lua_Integer(value.integer));
+            break;
+        case IpcValueKind::number:
+            lua_pushnumber(state, value.number);
+            break;
+        case IpcValueKind::text:
+            if (value.size > 96)
+                luaL_error(state, "invalid IPC text length");
+            lua_pushlstring(state, value.text.data(), value.size);
+            break;
+        default:
+            luaL_error(state, "invalid IPC kind");
+        }
+    }
+    static Error ipcCall(lua_State *state, const IpcRequest &request, IpcReply &reply) {
+        auto &app = self(state);
+        if (app.host.kind == ExecutionKind::service && app.loading)
+            return Error::invalid_state;
+        if (!app.host.enabled || !app.host.ipc)
+            return Error::not_supported;
+        uint64_t started{};
+        if (!nativeBegin(state, started))
+            return Error::quota_exceeded;
+        const auto error = app.host.ipc(app.host.context, request, reply);
+        nativeEnd(state, started);
+        return error;
+    }
+    static int ipcSend(lua_State *state) {
+        arguments(state, 3);
+        IpcRequest request;
+        IpcReply reply;
+        request.operation = IpcOperation::send;
+        boundedName(state, 1, request.target);
+        boundedName(state, 2, request.key);
+        request.value = ipcValue(state, 3);
+        return status(state, ipcCall(state, request, reply));
+    }
+    static int stateRead(lua_State *state) {
+        arguments(state, 1);
+        IpcRequest request;
+        IpcReply reply;
+        request.operation = IpcOperation::read;
+        boundedName(state, 1, request.key);
+        const auto error = ipcCall(state, request, reply);
+        if (error == Error::ok)
+            pushIpcValue(state, reply.value);
+        else
+            lua_pushnil(state);
+        lua_pushinteger(state, lua_Integer(reply.revision));
+        status(state, error);
+        return 3;
+    }
+    static int stateCommit(lua_State *state) {
+        arguments(state, 2);
+        IpcRequest request;
+        IpcReply reply;
+        request.operation = IpcOperation::commit;
+        const auto revision = integer(state, 1);
+        if (revision < 0 || lua_type(state, 2) != LUA_TTABLE)
+            return luaL_error(state, "revision and writes table required");
+        request.expectedRevision = uint64_t(revision);
+        lua_pushnil(state);
+        while (lua_next(state, 2)) {
+            if (request.count == request.writes.size())
+                return luaL_error(state, "at most eight state writes");
+            auto &write = request.writes[request.count++];
+            boundedName(state, -2, write.key);
+            write.value = ipcValue(state, -1);
+            lua_pop(state, 1);
+        }
+        if (!request.count)
+            return luaL_error(state, "state writes required");
+        const auto error = ipcCall(state, request, reply);
+        lua_pushinteger(state, lua_Integer(reply.revision));
+        status(state, error);
+        return 2;
+    }
+    static int stateFlush(lua_State *state) {
+        arguments(state, 0);
+        IpcRequest request;
+        IpcReply reply;
+        request.operation = IpcOperation::flush;
+        const auto error = ipcCall(state, request, reply);
+        if (error == Error::ok)
+            lua_pushinteger(state, lua_Integer(reply.ticket));
+        else
+            lua_pushnil(state);
+        status(state, error);
+        return 2;
+    }
+    static int callIpc(lua_State *state) {
+        const auto &event = *self(state).pendingIpc;
+        const char *handler = event.kind == IpcEventKind::message ? "message"
+            : event.kind == IpcEventKind::state_changed           ? "state"
+            : event.kind == IpcEventKind::persisted               ? "persisted"
+                                                                  : "policy";
+        lua_pushstring(state, handler);
+        lua_rawget(state, 1);
+        if (lua_isnil(state, -1))
+            return 0;
+        if (!lua_isfunction(state, -1))
+            return luaL_error(state, "IPC handler must be a function");
+        if (event.kind == IpcEventKind::message) {
+            const auto component = std::find(event.component.begin(), event.component.end(), '\0');
+            const auto topic = std::find(event.topic.begin(), event.topic.end(), '\0');
+            lua_pushlstring(
+                state, event.component.data(), size_t(component - event.component.begin()));
+            lua_pushlstring(state, event.topic.data(), size_t(topic - event.topic.begin()));
+            pushIpcValue(state, event.value);
+            lua_call(state, 3, 0);
+        } else if (event.kind == IpcEventKind::state_changed) {
+            lua_pushinteger(state, lua_Integer(event.revision));
+            lua_call(state, 1, 0);
+        } else if (event.kind == IpcEventKind::persisted) {
+            lua_pushinteger(state, lua_Integer(event.ticket));
+            status(state, event.error);
+            lua_call(state, 2, 0);
+        } else {
+            pushIpcValue(state, event.value);
+            lua_call(state, 1, 0);
+        }
+        return 0;
+    }
+    static void registerShared(lua_State *state) {
+        if (self(state).host.sensor) {
+            lua_createtable(state, 0, 5);
+            lua_pushcfunction(state, sensorCatalog);
+            lua_setfield(state, -2, "catalog");
+            lua_pushcfunction(state, sensorCached);
+            lua_setfield(state, -2, "read");
+            lua_pushcfunction(state, sensorRefresh);
+            lua_setfield(state, -2, "refresh");
+            lua_pushcfunction(state, sensorSubscribe);
+            lua_setfield(state, -2, "subscribe");
+            lua_pushcfunction(state, sensorUnsubscribe);
+            lua_setfield(state, -2, "unsubscribe");
+            lua_setfield(state, -2, "sensors");
+        }
+        if (self(state).host.ipc) {
+            lua_createtable(state, 0, 1);
+            lua_pushcfunction(state, ipcSend);
+            lua_setfield(state, -2, "send");
+            lua_setfield(state, -2, "ipc");
+            lua_createtable(state, 0, 3);
+            lua_pushcfunction(state, stateRead);
+            lua_setfield(state, -2, "read");
+            lua_pushcfunction(state, stateCommit);
+            lua_setfield(state, -2, "commit");
+            lua_pushcfunction(state, stateFlush);
+            lua_setfield(state, -2, "flush");
+            lua_setfield(state, -2, "state");
+        }
+    }
+    static Error servicesCall(lua_State *state, const ServiceRequest &request, ServiceInfo &reply) {
+        auto &app = self(state);
+        if (!app.host.enabled || !app.host.services || app.host.kind != ExecutionKind::foreground)
+            return Error::not_supported;
+        uint64_t started{};
+        if (!nativeBegin(state, started))
+            return Error::quota_exceeded;
+        const auto error = app.host.services(app.host.context, request, reply);
+        nativeEnd(state, started);
+        return error;
+    }
+    static int servicesList(lua_State *state) {
+        arguments(state, 1);
+        const auto index = integer(state, 1);
+        if (index < 0 || index > 255)
+            return luaL_error(state, "service index out of range");
+        ServiceRequest request;
+        request.operation = ServiceOperation::list;
+        request.index = uint16_t(index);
+        ServiceInfo reply;
+        const auto error = servicesCall(state, request, reply);
+        if (error != Error::ok)
+            lua_pushnil(state);
+        else {
+            lua_createtable(state, 0, 18);
+            auto text = [&](const char *key, const auto &value) {
+                textField(state, key,
+                    {value.data(),
+                        size_t(std::find(value.begin(), value.end(), '\0') - value.begin())});
+            };
+            text("package", reply.package);
+            text("component", reply.component);
+            text("label", reply.label);
+            field(state, "state", uint8_t(reply.state));
+            field(state, "reason", uint8_t(reply.reason));
+            field(state, "error", uint16_t(reply.error));
+            field(state, "instance_id", reply.instance.id);
+            field(state, "generation", reply.instance.generation);
+            field(state, "used", reply.used);
+            field(state, "peak", reply.peak);
+            field(state, "reserved", reply.reserved);
+            field(state, "callbacks", reply.callbacks);
+            field(state, "instructions", reply.instructions);
+            field(state, "native_calls", reply.nativeCalls);
+            field(state, "max_callback_us", reply.maxCallbackUs);
+            field(state, "wakeups", reply.wakeups);
+            lua_pushboolean(state, reply.executeGranted);
+            lua_setfield(state, -2, "execute_granted");
+            lua_pushboolean(state, reply.autostartGranted);
+            lua_setfield(state, -2, "autostart_granted");
+            lua_pushboolean(state, reply.autostart);
+            lua_setfield(state, -2, "autostart");
+        }
+        status(state, error);
+        return 2;
+    }
+    static int servicesControl(lua_State *state) {
+        arguments(state, 3);
+        const auto action = integer(state, 1);
+        if (action < 0 || action > 6)
+            return luaL_error(state, "invalid service control action");
+        ServiceRequest request;
+        request.operation = ServiceOperation(action + 1);
+        boundedName(state, 2, request.package);
+        boundedName(state, 3, request.component);
+        ServiceInfo reply;
+        return status(state, servicesCall(state, request, reply));
+    }
     static int environment(lua_State *state) {
         lua_createtable(state, 0, 10);
+        if (self(state).host.kind == ExecutionKind::service) {
+            lua_pushcfunction(state, read);
+            lua_setfield(state, -2, "read");
+            lua_pushcfunction(state, schedule);
+            lua_setfield(state, -2, "schedule");
+            lua_pushcfunction(state, timer);
+            lua_setfield(state, -2, "timer");
+            if (self(state).host.outputs & 1) {
+                lua_pushcfunction(state, beep);
+                lua_setfield(state, -2, "beep");
+            }
+            registerShared(state);
+            lua_setglobal(state, "ignite");
+            return 0;
+        }
         lua_pushcfunction(state, set);
         lua_setfield(state, -2, "set");
         lua_pushcfunction(state, publish);
@@ -613,19 +940,14 @@ struct LuaApp::Impl {
                 lua_pushcfunction(state, brightness);
                 lua_setfield(state, -2, "brightness");
             }
-            if (self(state).host.sensor) {
-                lua_createtable(state, 0, 5);
-                lua_pushcfunction(state, sensorCatalog);
-                lua_setfield(state, -2, "catalog");
-                lua_pushcfunction(state, sensorCached);
-                lua_setfield(state, -2, "read");
-                lua_pushcfunction(state, sensorRefresh);
-                lua_setfield(state, -2, "refresh");
-                lua_pushcfunction(state, sensorSubscribe);
-                lua_setfield(state, -2, "subscribe");
-                lua_pushcfunction(state, sensorUnsubscribe);
-                lua_setfield(state, -2, "unsubscribe");
-                lua_setfield(state, -2, "sensors");
+            registerShared(state);
+            if (self(state).host.services) {
+                lua_createtable(state, 0, 2);
+                lua_pushcfunction(state, servicesList);
+                lua_setfield(state, -2, "list");
+                lua_pushcfunction(state, servicesControl);
+                lua_setfield(state, -2, "control");
+                lua_setfield(state, -2, "services");
             }
         }
         lua_setglobal(state, "ignite");
@@ -692,7 +1014,18 @@ std::span<const LuaValue> LuaApp::values() const {
 }
 Error LuaApp::load(std::string_view source, uint32_t memory, uint32_t instructions,
     FlintRender::Scene &scene, AppHost host) {
+    host.kind = ExecutionKind::foreground;
+    return loadImpl(source, memory, instructions, &scene, host);
+}
+Error LuaApp::loadService(
+    std::string_view source, uint32_t memory, uint32_t instructions, AppHost host) {
+    host.kind = ExecutionKind::service;
+    return loadImpl(source, memory, instructions, nullptr, host);
+}
+Error LuaApp::loadImpl(std::string_view source, uint32_t memory, uint32_t instructions,
+    FlintRender::Scene *scene, AppHost host) {
     stop();
+    lastUsage_ = {};
     diagnostic_ = {};
     std::copy_n("load", 4, diagnostic_.phase.begin());
 #ifdef FLINT_ENABLE_LUA
@@ -710,10 +1043,11 @@ Error LuaApp::load(std::string_view source, uint32_t memory, uint32_t instructio
     app->host = host;
     app->diagnostic = &diagnostic_;
     app->clock = app->lastUpdate = host.monotonic ? host.monotonic(host.context) : 0;
-    app->nextUpdate = Impl::after(app->clock, 33);
+    app->interval = host.kind == ExecutionKind::service ? 0 : 33;
+    app->nextUpdate = app->interval ? Impl::after(app->clock, app->interval) : UINT64_MAX;
     app->limit = memory;
-    app->instructions = app->remaining = instructions;
-    app->scene = &scene;
+    app->instructions = app->remaining = app->dispatchInstructions = instructions;
+    app->scene = scene;
     app->state = lua_newstate(Impl::allocate, app.get());
     if (!app->state) {
         diagnostic_.error = Error::resource_exhausted;
@@ -739,9 +1073,15 @@ Error LuaApp::load(std::string_view source, uint32_t memory, uint32_t instructio
         stop();
         return Error::invalid_argument;
     }
+    if (host.kind == ExecutionKind::service) {
+        impl_->loading = false;
+        return Error::ok;
+    }
     error = update(0, false);
     if (error != Error::ok)
         stop();
+    else
+        impl_->loading = false;
     return error;
 #else
     (void)source;
@@ -761,9 +1101,12 @@ Error LuaApp::update(uint32_t elapsedMs, bool pressed) {
     auto &app = *impl_;
     app.changed = false;
     if (!app.batch) {
-        app.remaining = app.instructions;
+        app.remaining = app.dispatchInstructions = app.instructions;
         app.error = Error::ok;
         app.nativeCalls = 0;
+        app.nativeLimit = 32;
+        app.deadline = app.nativeWall = app.maxNative = 0;
+        app.dispatchStarted = app.host.microseconds ? app.host.microseconds(app.host.context) : 0;
     }
     auto *state = app.state;
     lua_pushcfunction(state, Impl::callUpdate);
@@ -782,7 +1125,13 @@ Error LuaApp::finish(int status, std::string_view phase) {
     auto &app = *impl_;
     diagnostic_.used = app.used;
     diagnostic_.peak = app.peak;
-    diagnostic_.instructions = app.instructions - app.remaining;
+    diagnostic_.instructions = app.dispatchInstructions - app.remaining;
+    lastUsage_ = usage();
+    if (status == LUA_OK && app.deadline && app.host.microseconds &&
+        app.host.microseconds(app.host.context) >= app.deadline) {
+        app.error = Error::execution_limit;
+        status = LUA_ERRRUN;
+    }
     diagnostic_.phase.fill(0);
     std::copy_n(phase.begin(), std::min(phase.size(), diagnostic_.phase.size() - 1),
         diagnostic_.phase.begin());
@@ -816,9 +1165,12 @@ Error LuaApp::event(std::string_view kind, int32_t value, const InputEvent *inpu
     auto &app = *impl_;
     app.changed = false;
     if (!app.batch) {
-        app.remaining = app.instructions;
+        app.remaining = app.dispatchInstructions = app.instructions;
         app.error = Error::ok;
         app.nativeCalls = 0;
+        app.nativeLimit = 32;
+        app.deadline = app.nativeWall = app.maxNative = 0;
+        app.dispatchStarted = app.host.microseconds ? app.host.microseconds(app.host.context) : 0;
     }
     auto *state = app.state;
     app.pendingEvent = kind;
@@ -846,6 +1198,23 @@ Error LuaApp::sensorEvent(const sensors::Event &event) {
     const auto result = lua_pcall(app.state, 1, 0, 0);
     app.pendingSensor = nullptr;
     return finish(result, "sensor");
+#else
+    (void)event;
+    return Error::not_supported;
+#endif
+}
+Error LuaApp::ipcEvent(const IpcEvent &event) {
+#ifdef FLINT_ENABLE_LUA
+    if (!impl_ || !impl_->batch)
+        return Error::invalid_state;
+    auto &app = *impl_;
+    app.changed = false;
+    app.pendingIpc = &event;
+    lua_pushcfunction(app.state, Impl::callIpc);
+    lua_pushvalue(app.state, 1);
+    const auto result = lua_pcall(app.state, 1, 0, 0);
+    app.pendingIpc = nullptr;
+    return finish(result, "ipc");
 #else
     (void)event;
     return Error::not_supported;
@@ -902,21 +1271,41 @@ uint64_t LuaApp::nextWake() const {
 bool LuaApp::visible(unsigned index) const {
     return !impl_ || (index < 32 && !(impl_->hidden & (uint32_t(1) << index)));
 }
-Error LuaApp::beginTick(uint64_t now) {
+Error LuaApp::beginTick(uint64_t now, DispatchBudget budget) {
     if (!impl_)
         return Error::invalid_state;
     if (now < impl_->clock)
         return Error::invalid_argument;
     impl_->clock = now;
     impl_->batch = true;
-    impl_->remaining = impl_->instructions;
+    impl_->remaining = impl_->dispatchInstructions = budget.instructions
+        ? std::min(budget.instructions, impl_->instructions)
+        : impl_->instructions;
     impl_->error = Error::ok;
     impl_->nativeCalls = 0;
+    impl_->nativeLimit = budget.nativeCalls;
+    impl_->deadline = budget.deadlineUs;
+    impl_->nativeWall = budget.nativeWallUs;
+    impl_->wallCheck = 0;
+    impl_->maxNative = 0;
+    impl_->dispatchStarted =
+        impl_->host.microseconds ? impl_->host.microseconds(impl_->host.context) : 0;
     return Error::ok;
 }
 void LuaApp::endTick() {
-    if (impl_)
+    if (impl_) {
+        lastUsage_ = usage();
         impl_->batch = false;
+    }
+}
+DispatchUsage LuaApp::usage() const {
+    if (!impl_)
+        return lastUsage_;
+    const auto &app = *impl_;
+    const auto at =
+        app.host.microseconds ? app.host.microseconds(app.host.context) : app.dispatchStarted;
+    return {app.dispatchInstructions - app.remaining, app.nativeCalls,
+        at >= app.dispatchStarted ? at - app.dispatchStarted : 0, app.maxNative};
 }
 void LuaApp::resumeClock(uint64_t now) {
     if (!impl_)
