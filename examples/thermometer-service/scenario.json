@@ -1,0 +1,29 @@
+{
+  "steps": [
+    {"op":"expect_service","component":"worker","state":0},
+    {"op":"service_start","component":"worker","expect":5},
+    {"op":"permission","permission":"app.background.execute","enabled":true},
+    {"op":"permission","permission":"sensors.temperature","enabled":true},
+    {"op":"permission","permission":"sensors.humidity","enabled":true},
+    {"op":"service_start","component":"worker"},
+    {"op":"advance","ms":0},
+    {"op":"advance","ms":0},
+    {"op":"advance","ms":0},
+    {"op":"expect_service","component":"worker","state":2},
+    {"op":"expect_text","text":"Temperature: 23.5"},
+    {"op":"expect_text","text":"Humidity: 45"},
+    {"op":"suspend"},
+    {"op":"advance","ms":5000},
+    {"op":"expect_service","component":"worker","state":2},
+    {"op":"resume"},
+    {"op":"advance","ms":5000},
+    {"op":"advance","ms":0},
+    {"op":"permission","permission":"sensors.temperature","enabled":false},
+    {"op":"advance","ms":5000},
+    {"op":"advance","ms":0},
+    {"op":"advance","ms":0},
+    {"op":"expect_text","text":"permission denied"},
+    {"op":"service_stop","component":"worker"},
+    {"op":"expect_service","component":"worker","state":0}
+  ]
+}

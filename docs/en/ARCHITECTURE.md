@@ -70,16 +70,16 @@ The handshake carries protocol, development revision, build ID and required capa
 python3 -m pip install Pillow
 python3 tools/generate_registry.py
 python3 tools/build_system.py
-cmake -S . -B /tmp/flint-platform -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/flint-platform
-ctest --test-dir /tmp/flint-platform --output-on-failure
+cmake -S . -B build/docs-sdk -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/docs-sdk --config Debug
+ctest --test-dir build/docs-sdk --output-on-failure -C Debug
 ```
 
 Build an application without changing or flashing OS source:
 
 ```sh
 python3 tools/compile_ignite.py \
-    examples/pc-monitor/project.json /tmp/pc-monitor.ignit
+    examples/pc-monitor/project.json build/pc-monitor.ignit
 ```
 
 Integration tests exercise resume, duplicate chunks, integrity failures, updates, rollback, factory protection, permission checks and revocation, custom fonts/images, stale handles, repeated switching and framing. Flare's offline smoke test loads the actual QML interface and simulator. Physical device tests are excluded.
@@ -89,7 +89,7 @@ Use four spaces, no tabs, in maintained source. `.editorconfig` and `.clang-form
 ## Explicit remaining limits
 
 Lua 5.4.9 is the only application scripting engine. Its bounded prototype runs on
-host builds, the shared simulator and the validated Spark firmware configuration. Isolated background services run in the same Core owner loop under a bounded model pool; see [lifecycle, IPC, quotas and migration](BACKGROUND-SERVICES.md). Registry entries for future permissions do not imply implemented APIs.
+host builds, the shared simulator and Spark firmware (physical validation is revision-specific). Isolated background services run in the same Core owner loop under a bounded model pool; see [lifecycle, IPC, quotas and migration](BACKGROUND-SERVICES.md). Registry entries for future permissions do not imply implemented APIs.
 
 The development unit was identified as 4 MiB Flash and 2 MiB PSRAM. Firmware owns the partition layout with two application slots, a factory volume and writable storage. PSRAM is optional; the renderer prefers it when available and stages DMA rows in internal memory. Real memory headroom, wiring, BLE behavior, flash/power-loss behavior and battery life still require device validation. No battery-life or on-device reliability claim follows from host tests.
 

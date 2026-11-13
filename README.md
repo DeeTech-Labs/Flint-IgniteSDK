@@ -33,12 +33,14 @@
 
 ## Быстрый старт
 
+Нужны Git, CMake 3.21+, C/C++20 и Python 3.11+. Pillow установите в interpreter, выбранный CMake, **до configure**. Ниже single-config команды Linux/macOS; для Windows Visual Studio добавьте `--config Debug` и `ctest -C Debug`, executable находится в `build/debug/Debug/`. [Полный маршрут с Windows-командами](docs/ru/APP-QUICKSTART.md).
+
 ```sh
 python3 -m pip install Pillow
 cmake -S . -B build/debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build build/debug
-ctest --test-dir build/debug --output-on-failure
-python3 tools/compile_ignite.py examples/pc-monitor/project.json /tmp/pc-monitor.ignit
+cmake --build build/debug --config Debug
+ctest --test-dir build/debug --output-on-failure -C Debug
+python3 tools/compile_ignite.py examples/pc-monitor/project.json build/debug/pc-monitor.ignit
 ```
 
 CMake создаёт реестры, системные пакеты и примеры в каталоге сборки; исходники не переписываются. Прямые генераторы по умолчанию используют `build/generated/`.
@@ -47,9 +49,11 @@ CMake создаёт реестры, системные пакеты и прим
 
 ## Исполнение приложений
 
-Lua 5.4.9 работает в ограниченном Runtime на компьютере, в симуляторе и проверенной конфигурации Spark. Фоновые службы пока не поддерживаются.
+Lua 5.4.9 работает в ограниченном Runtime на компьютере, в симуляторе и firmware Spark; физическая приёмка текущих sensors/services остаётся отдельной. Реализованы отдельные service VM с явными grants и общими квотами. Число служб и аппаратный допуск определяет модель; host-тесты не подтверждают вместимость физической платы.
 
 ## Документация
+
+[Единый индекс экосистемы по аудиториям](docs/ru/README.md) · [Первое приложение](docs/ru/APP-QUICKSTART.md) · [Вклад в SDK](CONTRIBUTING.md).
 
 - [Руководство SDK и Lua](docs/ru/SDK.md).
 - [Архитектура и бинарные форматы](docs/ru/ARCHITECTURE.md).

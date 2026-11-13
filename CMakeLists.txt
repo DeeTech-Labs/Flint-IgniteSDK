@@ -56,6 +56,10 @@ option(FLINT_PLATFORM_TESTS "Build local platform tests" ON)
 if(FLINT_PLATFORM_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME documentation COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_docs.py)
+    add_test(NAME documentation_checker COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_docs.py)
     add_test(NAME companion_client COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_companion.py)
     add_test(NAME registry_validation COMMAND ${Python3_EXECUTABLE}
@@ -155,6 +159,11 @@ if(FLINT_PLATFORM_TESTS AND FLINT_ENABLE_LUA)
 endif()
 
 if(FLINT_PLATFORM_TESTS AND FLINT_SDK_TOOLS AND FLINT_ENABLE_LUA)
+    add_test(NAME documentation_examples COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_docs.py --examples
+        --validator $<TARGET_FILE:ignite-check> --runner $<TARGET_FILE:ignite-run>)
+    set_tests_properties(documentation_examples PROPERTIES TIMEOUT 60 ENVIRONMENT
+        "PYTHONDONTWRITEBYTECODE=1;TMPDIR=${CMAKE_CURRENT_SOURCE_DIR}/temp;TEMP=${CMAKE_CURRENT_SOURCE_DIR}/temp;TMP=${CMAKE_CURRENT_SOURCE_DIR}/temp")
     add_test(NAME lua_packages COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lua_packages.py
         $<TARGET_FILE:ignite-check> $<TARGET_FILE:ignite-run>)

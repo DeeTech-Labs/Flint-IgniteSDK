@@ -1,3 +1,5 @@
+[Reproducible first application](APP-QUICKSTART.md) · [Lua API](LUA-API.md) · [Index](INDEX.md)
+
 [Русский оригинал](../ru/SDK.md)
 
 [Sensors, permissions and bounded Lua API](SENSORS.md)
@@ -11,22 +13,22 @@ Repository: https://github.com/DeeTech-Labs/Flint-IgniteSDK
 
 ## Build and install
 
-Requires CMake, a C/C++20 toolchain and Python 3. Pillow is needed for image/font
-conversion and integration-test fixtures. Lua 5.4.9 is vendored with its upstream
+Requires CMake3.21+, C/C++20, Python3.11+ and Pillow in the selected interpreter
+before configure, including factory generation without tests. Lua 5.4.9 is vendored with its upstream
 license and verified archive digest; builds do not download an interpreter.
 
 ```sh
-cmake -S . -B /tmp/ignite-build -DCMAKE_BUILD_TYPE=Debug
-cmake --build /tmp/ignite-build --parallel
-ctest --test-dir /tmp/ignite-build --output-on-failure
-cmake --install /tmp/ignite-build --prefix /tmp/ignite-sdk
-/tmp/ignite-sdk/bin/ignite init /tmp/my-clock --id demo.clock --publisher demo
-/tmp/ignite-sdk/bin/ignite build /tmp/my-clock/project.json /tmp/my-clock.ignit
-/tmp/ignite-sdk/bin/ignite check /tmp/my-clock.ignit
+cmake -S . -B build/docs-sdk -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/docs-sdk --config Debug --parallel 2
+ctest --test-dir build/docs-sdk -C Debug --output-on-failure
+cmake --install build/docs-sdk --config Debug --prefix build/docs-installed
+build/docs-installed/bin/ignite init build/my-clock --id demo.clock --publisher demo
+build/docs-installed/bin/ignite build build/my-clock/project.json build/my-clock.ignit
+build/docs-installed/bin/ignite check build/my-clock.ignit
 ```
 
 On Windows invoke the installed `ignite` script using Python. In a source checkout
-pass `--validator /tmp/ignite-build/ignite-check` to `tools/ignite.py build/check`.
+pass `--validator build/docs-sdk/ignite-check` to `tools/ignite.py build/check`.
 CLI reports and diagnostics use UTF-8 independently of the console code page.
 Failed builds preserve the last successful package. The JSON report gives declared
 budgets and runtime compatibility, not measured hardware fit, publisher authenticity,
@@ -55,8 +57,8 @@ count is not wall-clock time. Native allocations, source parsing, C stack and GC
 latency still require measurement on the device.
 
 ```sh
-/tmp/ignite-sdk/bin/ignite build examples/flappy-bird/project.json /tmp/game.ignit
-/tmp/ignite-sdk/bin/ignite run /tmp/game.ignit --frames 120 --press-every 24 --image /tmp/game.ppm
+build/docs-installed/bin/ignite build examples/flappy-bird/project.json build/game.ignit
+build/docs-installed/bin/ignite run build/game.ignit --frames 120 --press-every 24 --image build/game.ppm
 ```
 
 `run` is a deterministic headless simulation with synthetic presses and a final
@@ -68,8 +70,8 @@ configuration. Spark firmware enables the same source/limits via
 firmware reserves a 32 KiB main-task stack. C++ bridge headers include `<climits>`
 to preserve the C/C++ integer ABI on ESP-IDF's toolchain.
 
-The Spark profile has physical validation for scene animation, repeated app
-switches, execution/allocation limits and factory recovery. Keep raw device
+Historical Spark reports cover scene animation, app switches, execution/allocation
+limits and factory recovery only for their stated revisions, not this new sensor/service image. Keep raw device
 reports outside the repository; record concise validation results in pull requests.
 Revalidate on-device when changing the engine, limits or native bindings.
 
@@ -159,8 +161,8 @@ These require empty-scope storage.private. Keys: 1..32 `[a-z0-9_]` characters; s
 ### Reproducible scenarios
 
 ```sh
-python3 tools/ignite.py build examples/counter/project.json /tmp/counter.ignit --validator /tmp/ignite-build/ignite-check
-python3 tools/ignite.py run /tmp/counter.ignit --scenario examples/counter/scenario.json --runner /tmp/ignite-build/ignite-run --image /tmp/counter.ppm
+python3 tools/ignite.py build examples/counter/project.json build/counter.ignit --validator build/docs-sdk/ignite-check
+python3 tools/ignite.py run build/counter.ignit --scenario examples/counter/scenario.json --runner build/docs-sdk/ignite-run --image build/counter.ppm
 ```
 
 run uses shared Core and a virtual monotonic clock. JSON contains exactly steps (1..4096 entries, file at most 256 KiB). Operations: advance with ms 0..86400000; input with kind and optional value/expect (expected enqueue error); suspend, resume, restart (new application run), reboot (new Core with retained storage); expect_text, expect_state, expect_error (Core's last logic error); permission with permission/scope/enabled via the trusted Companion API. Revocation applies to implemented grant permissions, not automatic permissions. Unknown fields/operations and wrong types are rejected. The first failed assertion exits with a nonzero status and step number. --storage retains state across CLI runs; --factory supplies factory packages for recovery tests. Otherwise storage is temporary. Scenarios do not verify display/input drivers, physical BLE, Flash durability, device RAM/stack, latency or battery life.
@@ -169,7 +171,7 @@ run uses shared Core and a virtual monotonic clock. JSON contains exactly steps 
 
 `Platform::memory` defines stable package admissibility. Do not populate it with current free heap: temporary memory pressure must not hide an installed package or trigger rollback. Optional `available_memory` is checked by Runtime at launch only, separately for internal RAM and PSRAM. Failure returns `resource_exhausted`, preserving the catalog and the previous app until ownership transfer. A verified installed update is not rolled back solely because activation runs out of memory; Core attempts the factory clock and records the launch error.
 
-The Lua heap still cannot exceed `declared internal - 16 KiB`. The declaration additionally reserves estimated native manifest/component allocations, `LuaApp::Impl` (including published values), and Lua source at the loading peak. The Lua heap is reduced when necessary; its 16 KiB minimum remains. An older package whose actual native peak exceeds its declaration may now fail launch; package format and ContractRevision remain unchanged. Impl allocation failure is explicit, and failed launch releases the file and resources even before lifecycle.create.
+The foreground Lua heap cannot exceed `declared internal - 16 KiB`. The declaration additionally reserves estimated native manifest/component allocations, `LuaApp::Impl` (including published values), and Lua source at the loading peak. The Lua heap is reduced when necessary; its 16 KiB minimum remains. An older package whose actual native peak exceeds its declaration may now fail launch; package format and ContractRevision remain unchanged. Impl allocation failure is explicit, and failed launch releases the file and resources even before lifecycle.create.
 
 Diagnostics distinguish `runtime_resident_bytes` (fixed Runtime, including ResourceManager and its buffers, already included in the platform baseline), native heap/peak estimates, and Lua used/peak. STL capacity estimates exclude allocator headers, fragmentation, stack, validation/scene bindings and hardware queues. The adapter must measure the full peak and largest free block; estimates do not guarantee total RAM.
 
@@ -213,7 +215,7 @@ Unchanged outputs retain their timestamps. Changed files publish through individ
 
 `build_system_icons.py --output <dir>` and `build_builtin_fonts.py --font-dir <fonts> --output <dir>` also default to `build/generated/`. Updating maintained PNG/font sources requires a separate reviewed copy, never an implicit build side effect. Existing source factory/sample packages and headers remain snapshots for older consumers; new CMake builds neither refresh them nor use them instead of current generated artifacts.
 
-Current touch/UI contracts use `ContractRevision=0x20261114` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. Flare still reading source `factory/` and `examples/` requires a separate resource integration migration; the portable `Flint::Platform` target already uses the new scheme.
+Current touch/UI contracts use `ContractRevision=0x20261114` with nominal Application API 1. Consume the matching SDK tree as a whole: headers, `core_ui.cpp`, `core_touch.cpp`, assets and system packages. Equal nominal API versions do not make older revisions compatible. OS and Flare consume build-local generated paths; source snapshots do not replace generation.
 
 
 [Background services, FLM3 component budgets, IPC and atomic shared state](BACKGROUND-SERVICES.md).

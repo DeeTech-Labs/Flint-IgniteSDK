@@ -21,7 +21,7 @@ Theme `appearance=light|dark` defaults to light; `icons=normal|themed` defaults 
 Launcher uses two124px columns,94px cells at100px pitch,48px icons above fitted UTF-8 labels, and six recycled cells. Offscreen cells are hidden. Existing touch/scroll behavior remains; rotate/press/release supports focus and activation. Scene kind7 is `CatalogIcon` (`catalog_icon`), extra=catalog index+1;0 means the standard tile. It requires unscoped packages.list and CapInteractiveUi. `ignite.set(ui.icon,'catalog',index)` accepts0…65534. `ignite.catalog(index)` returns name,target,error. `Scene.resourceRevision` is derived RAM-only invalidation metadata.
 
 ```sh
-python tools/flim.py icon.png icon.flim --representation INDEX8 --size 48 48 --colors 256 --preview quantized.png
+python tools/flim.py examples/icons/main.png build/docs-sdk/icon.flim --representation INDEX8 --size 48 48 --colors 256 --preview build/docs-sdk/quantized.png
 python tools/flim.py mask.png mask.flim --representation A4 --mask alpha --size 48 48
 python tools/compile_ignite.py examples/icons/project.json icons.ignit
 ```
@@ -34,7 +34,7 @@ Row scratch960 bytes and palette768 reuse the existing4096-byte glyph scratch. O
 
 Cold cache misses use the existing catalog scan/verification and stream the package hash, then validate the whole icon once. Warm rendering reads header, palette and clipped pixel rows only. Full48px draw needs49 resource reads for A4/RGB565+A8,50 for INDEX8. Resource sizes including header:1168 bytes A4,2320+3N INDEX8 (maximum3088),6928 RGB565+A8.
 
-`flim_decoder` and `app_icons` cover alpha, odd widths, palettes, malformed inputs, clipping/swapped canvas, variants, fallback, installation/update/removal and package integrity. Existing UI tests cover navigation and long names. Run `python tools/benchmark_icons.py build/flim_tests.exe build/icon-bench` for200-iteration native host file-read validation/draw timings on monitor/ring/gradient samples. These warm-host-cache measurements exclude catalog/package verification and display SPI, and do not establish ESP32-S3 performance or peak heap. Object sizeof values are not whole-system memory measurements.
+`flim_decoder` and `app_icons` cover alpha, odd widths, palettes, malformed inputs, clipping/swapped canvas, variants, fallback, installation/update/removal and package integrity. Existing UI tests cover navigation and long names. Run `python tools/benchmark_icons.py build/docs-sdk/Debug/flim_tests.exe build/icon-bench` for200-iteration native host file-read validation/draw timings on monitor/ring/gradient samples. These warm-host-cache measurements exclude catalog/package verification and display SPI, and do not establish ESP32-S3 performance or peak heap. Object sizeof values are not whole-system memory measurements.
 
 [Host measurements and RAM estimate](FLIM-BENCHMARK.md)
 
@@ -45,3 +45,5 @@ Derived resourceRevision includes catalog, theme mode and read-failure cache gen
 ResourceManager/Runtime close the decoder's borrowed Source before local views/read contexts expire. Scratch remains shared; validate without a subsequent open returns invalid_state.
 
 [FLM3 component declarations and SDK migration](BACKGROUND-SERVICES.md); manifest changes do not change the FLIM v2 image codec.
+
+The RU JSON block is a project fragment using main/mask PNGs from examples/icons; declare light/dark only with corresponding resources. [The complete example](../../examples/icons/project.json) is compiled by documentation tests. Use your configured executable path for benchmarks (Debug/ is Visual Studio-specific).
