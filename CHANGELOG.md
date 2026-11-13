@@ -6,6 +6,7 @@ The format follows Keep a Changelog.
 ## [Unreleased]
 
 ### Fixed
+- Refresh monotonic time before dispatch after autostart loading or shared-state persistence, preventing a new service from faulting with `invalid_state` when time advances inside a Core pass. Report zero current instance memory after stop while retaining peak statistics.
 - Keep long thermometer values and system presentation text in explicit regions. Add optional `overflow` text boxes (`clip`, `wrap`, `ellipsis`); free positioning remains unchanged. Breaking development contract `0x20261115` requires rebuilding packages, factory, OS and Flare together without erasing user data. See [text layout](docs/en/UI-LAYOUT.md).
 - Convert fractional thermometer readings to text before publishing UI values; the executable documentation scenario now exercises UI delivery and permission revocation.
 - Label shared thermometer values as last-known readings, so stopping its collector cannot leave a false freshness claim in the UI.
