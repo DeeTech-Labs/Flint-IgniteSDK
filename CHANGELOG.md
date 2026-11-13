@@ -6,6 +6,7 @@ The format follows Keep a Changelog.
 ## [Unreleased]
 
 ### Fixed
+- Label shared thermometer values as last-known readings, so stopping its collector cannot leave a false freshness claim in the UI.
 - Release service resources on pause/resume callback faults, persist the crash autostart latch, preserve unrelated owners on package removal, and retain sensor conversion deadlines without busy polling deferred service events.
 - Preserve incompatible installed package objects, references and private state across firmware contract changes; explicit launch reports incompatible_contract instead of treating incompatibility as storage corruption.
 - Keep revocation denied in RAM if durable persistence fails, suppress pending readings after revoke, and distinguish saved output policy from failed hardware acknowledgement.
