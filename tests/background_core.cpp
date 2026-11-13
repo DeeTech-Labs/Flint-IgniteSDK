@@ -24,7 +24,7 @@ static int published(Core &core, std::string_view key) {
 struct Harness {
     fs::path root;
     std::string factory;
-    uint64_t now{1000}, us{};
+    uint64_t now{1000}, us{}, monotonicStep{};
     bool low{}, memoryLow{};
     sensors::Simulation backend;
     Platform platform;
@@ -40,7 +40,7 @@ struct Harness {
         platform.capabilities |= CapBackground | CapComponentIpc;
         platform.memory = {512 * 1024, 0, 100000};
         platform.available_memory = [&] { return platform.memory; };
-        platform.monotonic = [&] { return now; };
+        platform.monotonic = [&] { const auto value = now; now += monotonicStep; return value; };
         platform.microseconds = [&] { return now * 1000 + ++us; };
         platform.background.maxServices = 2; platform.background.memoryBytes = pool;
         platform.background.instructionsPerWindow = 16384; platform.background.nativeCallsPerWindow = 64;
@@ -213,10 +213,14 @@ int main(int argc, char **argv) {
     CHECK(h.core->nextWake() > h.now); // Exhausted owner events cannot create a busy loop.
     h.tick(4, 1000); CHECK(h.rows().at(busyA).callbacks > fa.callbacks && h.rows().at(busyB).callbacks > fb.callbacks);
     CHECK(h.core->stopService(busyA) == Error::ok && h.core->stopService(busyB) == Error::ok);
+    CHECK(!h.rows().at(busyA).used && !h.rows().at(busyB).used);
     // Autostart requires both grants and the explicit generation-bound preference.
     CHECK(h.control(4, a) == Error::permission_denied);
     CHECK(h.grant(a, "app.background.autostart") == Error::ok && h.control(4, a) == Error::ok);
+    // Loading may advance real time within the same Core pass, unlike a frozen simulator.
+    h.monotonicStep = 1;
     h.reboot(); h.tick(4); CHECK(h.rows().at(a).state == ServiceState::running);
+    h.monotonicStep = 0;
     CHECK(h.core->launch(a, "main") == Error::ok); h.tick(3, 1000);
     const auto grants = fileBytes(store / "grants.bin"), epoch = fileBytes(store / "epoch");
     for (unsigned i = 0; i < 10; ++i) h.tick(3, 100);

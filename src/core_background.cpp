@@ -385,6 +385,7 @@ Error Core::stopService(std::string_view package, ServiceReason reason) {
             record.info.reason = reason;
             record.info.state = ServiceState::stopped;
             record.info.reserved = 0;
+            record.info.used = 0;
             slot.runtime.reset();
             if (error != Error::ok) {
                 record.info.state = ServiceState::faulted;
@@ -741,6 +742,9 @@ bool Core::backgroundTick(uint64_t at) {
             (void)queue.push(event);
         }
     }
+    // Loading an autostart VM (or flushing state) can advance the clock during
+    // this pass. Dispatch must not precede the VM's freshly initialized clock.
+    at = platform_.monotonic();
     if (at >= b.nextWindow || at < b.windowAt) {
         b.windowAt = at;
         b.nextWindow = at > UINT64_MAX - policy.windowMs ? UINT64_MAX : at + policy.windowMs;
